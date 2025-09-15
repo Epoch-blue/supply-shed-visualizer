@@ -344,6 +344,7 @@ def fetch_data():
         area_ha_commodity,
         ST_AREA(geo) / 10000 as area_ha_supply_shed,
         SAFE_DIVIDE(area_ha_estate, area_ha_smallholder) as estate_smallholder_ratio,
+        commodity_plot_no,
         ST_X(ST_GEOGFROMTEXT(facility_geo)) as longitude,
         ST_Y(ST_GEOGFROMTEXT(facility_geo)) as latitude
     FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`
