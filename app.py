@@ -456,9 +456,9 @@ def fetch_plot_hexagon_data():
 # Load data after all functions are defined but before layout creation
 print("Loading facility data...")
 df = fetch_data()
-print("Loading plot hexagon data...")
-plot_df = fetch_plot_hexagon_data()
-print(f"Loaded {len(df)} facilities and {len(plot_df)} plots")
+print(f"Loaded {len(df)} facilities")
+# Plot data will be loaded lazily when needed
+plot_df = None
 
 # Mapbox API key
 
@@ -1304,7 +1304,7 @@ def update_highlight_metadata_and_detail_from_clicks(chart_click_data, map_click
     [Output('detail-map', 'data'),
      Output('detail-map-data', 'data', allow_duplicate=True)],
     Input('detail-map', 'id'),
-    prevent_initial_call='initial_duplicate'
+    prevent_initial_call=True
 )
 def load_default_detail_map(_):
     """Load default detail map data on app startup"""
@@ -2228,8 +2228,13 @@ def update_deck_map(variable, highlighted_facility, layer_toggle):
     # Create map based on layer type (True = Plots, False = Facilities)
     if layer_toggle:
         print(f"TOGGLE: Creating plots layer with variable: {variable}")
-        # Use pre-loaded plot data
-        print(f"TOGGLE: Using pre-loaded plot data, shape: {plot_df.shape if not plot_df.empty else 'empty'}")
+        # Load plot data when needed
+        global plot_df
+        if plot_df is None:
+            print("TOGGLE: Loading plot data for first time...")
+            plot_df = fetch_plot_hexagon_data()
+            print(f"TOGGLE: Loaded plot data, shape: {plot_df.shape if not plot_df.empty else 'empty'}")
+        
         if not plot_df.empty:
             print(f"TOGGLE: Plot data columns: {list(plot_df.columns)}")
             hexagon_layer = create_plot_hexagon_layer(plot_df, variable)
