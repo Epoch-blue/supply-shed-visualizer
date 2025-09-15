@@ -16,8 +16,9 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy application code and assets
 COPY app.py .
+COPY assets/ ./assets/
 
 # Create non-root user for security
 RUN useradd --create-home --shell /bin/bash app \

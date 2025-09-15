@@ -73,11 +73,11 @@ echo "🌐 Setting up custom domain mapping..."
 CUSTOM_DOMAIN="epoch-supply-shed-viz.app"
 
 # Check if domain mapping already exists
-if gcloud run domain-mappings describe ${CUSTOM_DOMAIN} --region=${REGION} &>/dev/null; then
+if gcloud beta run domain-mappings describe ${CUSTOM_DOMAIN} --region=${REGION} &>/dev/null; then
     echo "   Custom domain mapping already exists: https://${CUSTOM_DOMAIN}"
 else
     echo "   Creating custom domain mapping..."
-    gcloud run domain-mappings create \
+    gcloud beta run domain-mappings create \
         --service=${SERVICE_NAME} \
         --domain=${CUSTOM_DOMAIN} \
         --region=${REGION} || echo "   Domain mapping failed - you may need to verify domain ownership first"

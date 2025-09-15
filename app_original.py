@@ -124,8 +124,7 @@ def cleanup_expired_sessions():
 # Initialize the Dash app with Epoch-like theme
 app = dash.Dash(__name__, external_stylesheets=[
     dbc.themes.BOOTSTRAP,
-    "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap",
-    "/assets/epoch_theme.css"
+    "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
 ])
 app.title = "Supply Shed Visualizer | Epoch"
 
@@ -848,7 +847,7 @@ EPOCH_COLORS = {
 app.layout = html.Div([
     # Store for authentication state
     dcc.Store(id='auth-state', data={'authenticated': False, 'user': None}),
-    dcc.Store(id='session-id', data=None, storage_type='local'),
+    dcc.Store(id='session-id', data=None),
     
     # Main content area
     html.Div(id='main-content'),
@@ -882,6 +881,15 @@ def create_main_layout():
                     html.P("Enviromental Metrics of All Palm Mills Supply Sheds in Indonesia", className="epoch-subtitle", style={'margin': '0', 'fontSize': '1.1rem', 'color': 'white'})
                 ], className="col text-center"),
                 html.Div([
+                    dbc.Button(
+                        "Logout",
+                        id="logout-btn",
+                        color="outline-light",
+                        size="sm",
+                        className="mt-2"
+                    )
+                ], className="col-auto"),
+                html.Div([
                     html.Img(
                         src="assets/wwf.png",
                         style={'height': '80px', 'width': 'auto'},
@@ -889,19 +897,8 @@ def create_main_layout():
                     )
                 ], className="col-auto")
             ], className="row align-items-center justify-content-between")
-        ], className="container", style={"position": "relative"})
-    ], className="epoch-header", style={"position": "relative"}),
-    
-    # Logout button positioned at the very edge of the screen
-    html.Div([
-        dbc.Button(
-            "Logout",
-            id="logout-btn",
-            color="outline-light",
-            size="sm",
-            className="mt-2"
-        )
-    ], style={"position": "fixed", "top": "20px", "right": "20px", "zIndex": "9999"}),
+        ], className="container")
+    ], className="epoch-header"),
     
     # Main content
     dbc.Container([
