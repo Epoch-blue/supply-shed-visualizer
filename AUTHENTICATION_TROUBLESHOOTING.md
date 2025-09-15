@@ -63,7 +63,7 @@
 
 ### 1. Check Cloud Run Logs
 ```bash
-gcloud run services logs read supply-shed-visualizer --region us-central1 --limit 100
+gcloud run services logs read supply-shed-visualizer --region europe-west2 --limit 100
 ```
 
 Look for:
@@ -84,7 +84,7 @@ Should return:
 
 ### 3. Check Environment Variables
 ```bash
-gcloud run services describe supply-shed-visualizer --region us-central1
+gcloud run services describe supply-shed-visualizer --region europe-west2
 ```
 
 Verify these are set:
@@ -149,7 +149,7 @@ gcloud projects get-iam-policy epoch-geospatial-dev \
 ```bash
 # Temporarily enable debug mode
 gcloud run services update supply-shed-visualizer \
-    --region us-central1 \
+    --region europe-west2 \
     --set-env-vars "DEBUG=True"
 ```
 

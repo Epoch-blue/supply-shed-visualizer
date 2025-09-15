@@ -88,7 +88,7 @@ gcloud services enable artifactregistry.googleapis.com
 # Create repository
 gcloud artifacts repositories create supply-shed-repo \
     --repository-format=docker \
-    --location=us-central1 \
+    --location=europe-west2 \
     --description="Docker repository for Supply Shed Visualizer"
 
 # Configure Docker authentication

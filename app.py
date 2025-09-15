@@ -1476,6 +1476,7 @@ def handle_logout(n_clicks):
 # Combined callback to update highlighted facility, metadata, and detail map from both chart and map clicks
 @app.callback(
     [Output('highlighted-facility', 'data'),
+     Output('hovered-facility', 'data'),
      Output('facility-metadata', 'children'),
      Output('detail-map', 'data', allow_duplicate=True),
      Output('detail-map-data', 'data'),
@@ -1491,11 +1492,9 @@ def update_highlight_metadata_and_detail_from_clicks(chart_click_data, map_click
     # Get the loaded data
     df, _ = get_data()
     
-    # Add a small delay to make loading visible
-    time.sleep(0.3)  # 300ms delay to show loading spinner
-    
+
     if not ctx.triggered:
-        return None, None, {'layers': []}, None, {"display": "none"}
+        return None, None, None, {'layers': []}, None, {"display": "none"}
     
     trigger_id = ctx.triggered[0]['prop_id']
     facility_id = None
@@ -1577,9 +1576,9 @@ def update_highlight_metadata_and_detail_from_clicks(chart_click_data, map_click
                 'supply_shed_df': detail_map_data[1].to_dict('records'),
                 'collection_id': collection_id
             }
-        return facility_label, metadata_table, detail_map_layers, stored_data, {"display": "none"}
+        return facility_label, facility_label, metadata_table, detail_map_layers, stored_data, {"display": "none"}
     
-    return None, None, {'layers': []}, None, loading_style
+    return None, None, None, {'layers': []}, None, loading_style
 
 # Callback to load default detail map data on app startup
 @app.callback(
@@ -2361,44 +2360,7 @@ def create_detail_map(plot_df, supply_shed_df, color_field='total_tco2ehayear'):
         # Return empty map if there's an error
         return json.dumps({"layers": []}, cls=SafeJSONEncoder)
 
-# Callback to update hovered facility store from map click
-@app.callback(
-    Output('hovered-facility', 'data', allow_duplicate=True),
-    Input('deck-map', 'clickInfo'),
-    prevent_initial_call=True
-)
-def update_hovered_facility_from_map(map_click_data):
-    """Update hovered facility store when map is clicked"""
-    if map_click_data and 'object' in map_click_data and map_click_data['object'] is not None:
-        obj = map_click_data['object']
-        # Create the same facility label format as used in the chart
-        facility_id = obj.get('facility_id', '')
-        company_name = obj.get('company_name', '')
-        
-        # Clean the values
-        if isinstance(facility_id, str):
-            facility_id = facility_id.strip()
-        if isinstance(company_name, str):
-            company_name = company_name.strip()
-        
-        # Check if values are meaningful
-        def is_meaningful(value):
-            if pd.isna(value):
-                return False
-            if isinstance(value, str) and value.strip().upper() in ['NA', 'N/A', 'NULL', '']:
-                return False
-            return True
-        
-        facility_meaningful = is_meaningful(facility_id)
-        company_meaningful = is_meaningful(company_name)
-        
-        if facility_meaningful and company_meaningful:
-            return f"{facility_id} - {company_name}"
-        elif facility_meaningful:
-            return str(facility_id)
-        elif company_meaningful:
-            return str(company_name)
-    return None
+# Removed separate hover callback - now handled in the main click callback
 
 # Callback to update tooltip based on layer toggle
 @app.callback(
@@ -2440,68 +2402,32 @@ def update_map_tooltip(layer_toggle, variable):
             }
         }
 
-# Callback to update map based on highlighted facility store
+# Callback to update map based on dropdown, toggle, and direct clicks
 @app.callback(
     Output('deck-map', 'data'),
     [Input('y-axis-dropdown', 'value'),
-     Input('highlighted-facility', 'data'),
-     Input('main-map-layer-toggle', 'value')]
+     Input('main-map-layer-toggle', 'value'),
+     Input('deck-map', 'clickInfo')]
 )
-def update_deck_map(variable, highlighted_facility, layer_toggle):
-    """Update the deck.gl map data and view state based on highlighted facility store"""
+def update_deck_map(variable, layer_toggle, click_info):
+    """Update the deck.gl map data and view state based on dropdown, toggle, and direct clicks"""
     
     print(f"TOGGLE: Callback triggered - layer_toggle: {layer_toggle}, variable: {variable}")
-    print(f"TOGGLE: All inputs - variable: {variable}, highlighted_facility: {highlighted_facility}, layer_toggle: {layer_toggle}")
+    print(f"TOGGLE: All inputs - variable: {variable}, layer_toggle: {layer_toggle}, click_info: {click_info is not None}")
     
     # Get the loaded data
     df, plot_df = get_data()
     
-    # Add a small delay to make loading visible
-    time.sleep(0.5)  # 500ms delay to show loading spinner
-    
-    # If there's a highlighted facility, find its coordinates for custom view state
+    # If there's a click on a facility, get coordinates directly for immediate zooming
     custom_view_state = None
-    if highlighted_facility:
-        # Find the coordinates of the highlighted facility
-        filtered_df = df.copy()
+    if click_info and 'object' in click_info and click_info['object'] is not None:
+        # Get coordinates directly from the clicked object for immediate zooming
+        obj = click_info['object']
+        lat = obj.get('latitude')
+        lon = obj.get('longitude')
         
-        # Create facility_company labels to match
-        def create_facility_label(row):
-            facility_id = row.get('facility_id', 'Unknown')
-            company_name = row.get('company_name', 'Unknown')
-            
-            if isinstance(facility_id, str):
-                facility_id = facility_id.strip()
-            if isinstance(company_name, str):
-                company_name = company_name.strip()
-            
-            def is_meaningful(value):
-                if pd.isna(value):
-                    return False
-                if isinstance(value, str) and value.strip().upper() in ['NA', 'N/A', 'NULL', '']:
-                    return False
-                return True
-            
-            facility_meaningful = is_meaningful(facility_id)
-            company_meaningful = is_meaningful(company_name)
-            
-            if facility_meaningful and company_meaningful:
-                return f"{facility_id} - {company_name}"
-            elif facility_meaningful:
-                return str(facility_id)
-            elif company_meaningful:
-                return str(company_name)
-            else:
-                return "Unknown"
-        
-        filtered_df['facility_label'] = filtered_df.apply(create_facility_label, axis=1)
-        matching_facility = filtered_df[filtered_df['facility_label'] == highlighted_facility]
-        
-        if not matching_facility.empty:
-            lat = matching_facility['latitude'].iloc[0]
-            lon = matching_facility['longitude'].iloc[0]
-            
-            # Create a zoomed view state
+        if lat is not None and lon is not None:
+            # Create a zoomed view state immediately
             custom_view_state = {
                 'latitude': lat,
                 'longitude': lon,
@@ -2509,7 +2435,6 @@ def update_deck_map(variable, highlighted_facility, layer_toggle):
                 'pitch': 0,  # 2D view
                 'bearing': 0
             }
-    
     # Create map based on layer type (True = Plots, False = Facilities)
     if layer_toggle:
         print(f"TOGGLE: Creating plots layer with variable: {variable}")
@@ -2585,7 +2510,7 @@ def update_deck_map(variable, highlighted_facility, layer_toggle):
     else:
         print("TOGGLE: Creating facilities layer")
         # Default to facility layer
-        facility_data = create_deck_map(None, 'dark', variable, '2d', custom_view_state, highlighted_facility)
+        facility_data = create_deck_map(None, 'dark', variable, '2d', custom_view_state, None)
         return facility_data
 
 # Callback for main map export
@@ -2612,9 +2537,6 @@ def export_main_map_data(n_clicks, layer_toggle):
         "animation": "spin 1s linear infinite",
         "display": "block"
     }
-    
-    # Add a delay to make the export process visible
-    time.sleep(3.0)  # 3 second delay to show export is happening
     
     if layer_toggle:  # Plot layer
         # Export plot data as GeoParquet
@@ -2653,9 +2575,6 @@ def export_detail_map_data(n_clicks, stored_data):
         "animation": "spin 1s linear infinite",
         "display": "block"
     }
-    
-    # Add a delay to make the export process visible
-    time.sleep(3.0)  # 3 second delay to show export is happening
     
     # Get the current collection ID from stored data
     collection_id = stored_data.get('collection_id')
