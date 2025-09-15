@@ -1303,11 +1303,15 @@ def update_highlight_metadata_and_detail_from_clicks(chart_click_data, map_click
 @app.callback(
     [Output('detail-map', 'data'),
      Output('detail-map-data', 'data', allow_duplicate=True)],
-    Input('detail-map', 'id'),
+    Input('auth-state', 'data'),
     prevent_initial_call=True
 )
-def load_default_detail_map(_):
+def load_default_detail_map(auth_state):
     """Load default detail map data on app startup"""
+    # Only load detail map when user is authenticated
+    if not auth_state or not auth_state.get('authenticated'):
+        return {'layers': []}, None
+    
     detail_map_data = create_default_detail_map()
     
     # Also populate the detail-map-data store for the dropdown callback
@@ -2120,7 +2124,7 @@ def update_hovered_facility_from_map(map_click_data):
     Output('deck-map', 'tooltip'),
     Input('main-map-layer-toggle', 'value'),
     Input('y-axis-dropdown', 'value'),
-    prevent_initial_call=True
+    prevent_initial_call=False
 )
 def update_map_tooltip(layer_toggle, variable):
     """Update tooltip based on layer type"""
