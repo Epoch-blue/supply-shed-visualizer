@@ -80,20 +80,35 @@ gcloud projects add-iam-policy-binding ${PROJECT_ID} \
     --role="roles/secretmanager.secretAccessor"
 ```
 
-### 5. Build and Deploy
+### 5. Create Artifact Registry Repository
+```bash
+# Enable Artifact Registry API
+gcloud services enable artifactregistry.googleapis.com
+
+# Create repository
+gcloud artifacts repositories create supply-shed-repo \
+    --repository-format=docker \
+    --location=us-central1 \
+    --description="Docker repository for Supply Shed Visualizer"
+
+# Configure Docker authentication
+gcloud auth configure-docker us-central1-docker.pkg.dev
+```
+
+### 6. Build and Deploy
 ```bash
 # Build image
-gcloud builds submit --tag gcr.io/epoch-geospatial-dev/supply-shed-visualizer
+gcloud builds submit --tag us-central1-docker.pkg.dev/epoch-geospatial-dev/supply-shed-repo/supply-shed-visualizer
 
 # Deploy to Cloud Run
 gcloud run deploy supply-shed-visualizer \
-    --image gcr.io/epoch-geospatial-dev/supply-shed-visualizer \
+    --image us-central1-docker.pkg.dev/epoch-geospatial-dev/supply-shed-repo/supply-shed-visualizer \
     --platform managed \
     --region us-central1 \
     --allow-unauthenticated \
     --port 8080 \
-    --memory 2Gi \
-    --cpu 2 \
+    --memory 16Gi \
+    --cpu 8 \
     --timeout 3600 \
     --max-instances 10 \
     --set-env-vars "BIGQUERY_PROJECT_ID=epoch-geospatial-dev" \

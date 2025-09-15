@@ -17,6 +17,9 @@ import io
 import geopandas as gpd
 from shapely.geometry import shape
 import secrets
+import time
+from google.oauth2 import service_account
+import traceback
 
 # Custom JSON encoder to handle NaN values
 class SafeJSONEncoder(json.JSONEncoder):
@@ -72,12 +75,51 @@ VALID_CREDENTIALS = {
     'william@epoch.blue': 'ssi123'
 }
 
-# In-memory session storage (in production, use Redis or database)
+# Session storage with expiration (in production, use Redis or database)
 user_sessions = {}
+SESSION_TIMEOUT = 24 * 60 * 60  # 24 hours in seconds
 
 def validate_credentials(username, password):
     """Validate user credentials"""
     return VALID_CREDENTIALS.get(username) == password
+
+def create_session(username):
+    """Create a new session with expiration"""
+    session_id = secrets.token_urlsafe(32)
+    user_sessions[session_id] = {
+        'authenticated': True,
+        'user': {
+            'email': username,
+            'name': username.split('@')[0].title(),
+            'picture': None
+        },
+        'created_at': time.time(),
+        'expires_at': time.time() + SESSION_TIMEOUT
+    }
+    return session_id
+
+def validate_session(session_id):
+    """Validate if session exists and is not expired"""
+    if not session_id or session_id not in user_sessions:
+        return False
+    
+    session = user_sessions[session_id]
+    if time.time() > session['expires_at']:
+        # Session expired, remove it
+        del user_sessions[session_id]
+        return False
+    
+    return True
+
+def cleanup_expired_sessions():
+    """Remove expired sessions"""
+    current_time = time.time()
+    expired_sessions = [
+        session_id for session_id, session in user_sessions.items()
+        if current_time > session['expires_at']
+    ]
+    for session_id in expired_sessions:
+        del user_sessions[session_id]
 
 # Initialize the Dash app with Epoch-like theme
 app = dash.Dash(__name__, external_stylesheets=[
@@ -190,7 +232,7 @@ def initialize_bigquery_client():
     """Initialize BigQuery client with proper credentials for production"""
     try:
         # Check if we're running in Cloud Run (production)
-        if os.getenv('K_SERVICE'):  # Cloud Run sets this environment variable
+        if os.getenv('GOOGLE_CLOUD_PROJECT'):  # Cloud Run sets this environment variable
             print("🚀 Running in Cloud Run - using default credentials")
             # In Cloud Run, use the service account attached to the service
             client = bigquery.Client(project=PROJECT_ID)
@@ -199,7 +241,6 @@ def initialize_bigquery_client():
             service_account_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
             if service_account_path and os.path.exists(service_account_path):
                 print(f"🔧 Using service account file: {service_account_path}")
-                from google.oauth2 import service_account
                 credentials = service_account.Credentials.from_service_account_file(
                     service_account_path,
                     scopes=['https://www.googleapis.com/auth/cloud-platform']
@@ -233,7 +274,27 @@ def fetch_data():
     
     query = f"""
     SELECT 
-        * EXCEPT(area_ha_supply_shed),
+        facility_id,
+        company_name,
+        country,
+        facility_geo,
+        collection_id,
+        noncompliance_area_ha,
+        noncompliance_area_perc,
+        luc_tco2eyear,
+        nonluc_tco2eyear,
+        luc_tco2ehayear,
+        nonluc_tco2ehayear,
+        total_tco2eyear,
+        total_tco2ehayear,
+        diversity_score,
+        water_stress_index,
+        precipitation_pet_ratio,
+        soil_moisture_percentile,
+        evapotranspiration_anomaly,
+        area_ha_estate,
+        area_ha_smallholder,
+        area_ha_commodity,
         ST_AREA(geo) / 10000 as area_ha_supply_shed,
         SAFE_DIVIDE(area_ha_estate, area_ha_smallholder) as estate_smallholder_ratio,
         ST_X(ST_GEOGFROMTEXT(facility_geo)) as longitude,
@@ -243,9 +304,17 @@ def fetch_data():
     """
     
     try:
-        df = client.query(query).to_dataframe()
+        # Use streaming to avoid response size limits
+        query_job = client.query(query)
+        df = query_job.to_dataframe(create_bqstorage_client=True)
+        
         # Clean the data immediately after fetching
         df = clean_dataframe(df)
+        
+        # Check data size for monitoring
+        data_size_mb = df.memory_usage(deep=True).sum() / 1024 / 1024
+        print(f"✅ Loaded {len(df)} facilities ({data_size_mb:.1f}MB) using streaming")
+        
         return df
     except Exception as e:
         print(f"Error fetching data: {e}")
@@ -272,7 +341,16 @@ def fetch_facility_detail_data(facility_id, company_name, df):
             print(f"No facility found with ID: {facility_id} and company: {company_name}")
             return pd.DataFrame(), pd.DataFrame()
         
+        # Check if collection_id column exists
+        if 'collection_id' not in facility_row.columns:
+            print(f"collection_id column not found in dataframe. Available columns: {list(facility_row.columns)}")
+            return pd.DataFrame(), pd.DataFrame()
+        
         collection_id = facility_row.iloc[0]['collection_id']
+        if not collection_id:
+            print(f"No collection_id found for facility: {facility_id}, company: {company_name}")
+            return pd.DataFrame(), pd.DataFrame()
+        
         print(f"Found collection_id: {collection_id} for facility: {facility_id}, company: {company_name}")
         
         # Query plot data
@@ -357,7 +435,13 @@ def clean_dataframe(df):
     df_clean = df.copy()
     
     # Replace NaN values in numeric columns
-    numeric_columns = ['noncompliance_area_rate', 'total_tco2ehayear', 'diversity_score', 'water_stress_index', 'area_ha']
+    numeric_columns = [
+        'noncompliance_area_rate', 'total_tco2ehayear', 'diversity_score', 'water_stress_index', 'area_ha',
+        'luc_tco2eyear', 'nonluc_tco2eyear', 'luc_tco2ehayear', 'nonluc_tco2ehayear', 'total_tco2eyear',
+        'precipitation_pet_ratio', 'soil_moisture_percentile', 'evapotranspiration_anomaly',
+        'noncompliance_area_ha', 'noncompliance_area_perc', 'estate_smallholder_ratio',
+        'area_ha_estate', 'area_ha_smallholder', 'area_ha_supply_shed', 'area_ha_commodity'
+    ]
     for col in numeric_columns:
         if col in df_clean.columns:
             df_clean[col] = df_clean[col].fillna(0)
@@ -427,7 +511,6 @@ def fetch_plot_hexagon_data():
         FROM `{PROJECT_ID}.{DATASET_ID}.stat_plot`
         WHERE ST_X(ST_CENTROID(geo)) IS NOT NULL 
           AND ST_Y(ST_CENTROID(geo)) IS NOT NULL
-        --LIMIT 100000  -- Limit to prevent frontend crashes
         """
         # Use streaming for large results
         query_job = client.query(query)
@@ -453,12 +536,30 @@ def fetch_plot_hexagon_data():
         print(f"Error fetching hexagon data: {e}")
         return pd.DataFrame()
 
-# Load data after all functions are defined but before layout creation
-print("Loading facility data...")
-df = fetch_data()
-print("Loading plot hexagon data...")
-plot_df = fetch_plot_hexagon_data()
-print(f"Loaded {len(df)} facilities and {len(plot_df)} plots")
+# Initialize empty dataframes - data will be loaded on demand
+print("🚀 Initializing app with lazy data loading...")
+df = pd.DataFrame()
+plot_df = pd.DataFrame()
+data_loaded = False
+
+def load_data_on_demand():
+    """Load data only when needed to avoid large startup responses"""
+    global df, plot_df, data_loaded
+    if not data_loaded:
+        print("Loading facility data...")
+        df = fetch_data()
+        print("Loading plot hexagon data...")
+        plot_df = fetch_plot_hexagon_data()
+        data_loaded = True
+        print(f"✅ Loaded {len(df)} facilities and {len(plot_df)} plots (lazy loading)")
+    return df, plot_df
+
+def get_data():
+    """Get the loaded data (no loading if already loaded)"""
+    global df, plot_df, data_loaded
+    if not data_loaded:
+        return load_data_on_demand()
+    return df, plot_df
 
 # Mapbox API key
 
@@ -470,11 +571,20 @@ def create_deck_map(selected_points=None,
                     highlighted_facility=None
                     ):
     """Create deck.gl map configuration"""
+    # Get the loaded data
+    df, _ = get_data()
+    
     # Always show all data (no filtering by selected_points)
     map_data = df.copy()
     
     # Clean the data - replace NaN values with 0 or appropriate defaults
-    numeric_columns = ['noncompliance_area_rate', 'total_tco2ehayear', 'diversity_score', 'water_stress_index', 'area_ha_commodity']
+    numeric_columns = [
+        'noncompliance_area_rate', 'total_tco2ehayear', 'diversity_score', 'water_stress_index', 'area_ha_commodity',
+        'luc_tco2eyear', 'nonluc_tco2eyear', 'luc_tco2ehayear', 'nonluc_tco2ehayear', 'total_tco2eyear',
+        'precipitation_pet_ratio', 'soil_moisture_percentile', 'evapotranspiration_anomaly',
+        'noncompliance_area_ha', 'noncompliance_area_perc', 'estate_smallholder_ratio',
+        'area_ha_estate', 'area_ha_smallholder', 'area_ha_supply_shed'
+    ]
     for col in numeric_columns:
         if col in map_data.columns:
             map_data[col] = map_data[col].fillna(0)
@@ -740,7 +850,14 @@ app.layout = html.Div([
     dcc.Store(id='session-id', data=None),
     
     # Main content area
-    html.Div(id='main-content')
+    html.Div(id='main-content'),
+    
+    # Interval component for session cleanup (every 5 minutes)
+    dcc.Interval(
+        id='session-cleanup-interval',
+        interval=5*60*1000,  # 5 minutes in milliseconds
+        n_intervals=0
+    )
 ], style={'backgroundColor': EPOCH_COLORS['background']})
 
 # Main application layout (shown when authenticated)
@@ -763,6 +880,15 @@ def create_main_layout():
                     html.H1("Supply Shed Visualizer", className="epoch-title", style={'margin': '0', 'fontSize': '2.5rem', 'color': 'white'}),
                     html.P("Enviromental Metrics of All Palm Mills Supply Sheds in Indonesia", className="epoch-subtitle", style={'margin': '0', 'fontSize': '1.1rem', 'color': 'white'})
                 ], className="col text-center"),
+                html.Div([
+                    dbc.Button(
+                        "Logout",
+                        id="logout-btn",
+                        color="outline-light",
+                        size="sm",
+                        className="mt-2"
+                    )
+                ], className="col-auto"),
                 html.Div([
                     html.Img(
                         src="assets/wwf.png",
@@ -854,16 +980,22 @@ def create_main_layout():
                         dcc.Dropdown(
                             id='y-axis-dropdown',
                             options=[
-                                {'label': 'Total Emissions (tCO2e/ha/yr)', 'value': 'total_tco2ehayear'},
                                 {'label': 'Noncompliance Area (ha)', 'value': 'noncompliance_area_ha'},
                                 {'label': 'Noncompliance Area (%)', 'value': 'noncompliance_area_perc'},
+                                {'label': 'LUC Emissions (tCO2e/yr)', 'value': 'luc_tco2eyear'},
+                                {'label': 'LUC Emissions (tCO2e/ha/yr)', 'value': 'luc_tco2ehayear'},
+                                {'label': 'Non-LUC Emissions (tCO2e/yr)', 'value': 'nonluc_tco2eyear'},
+                                {'label': 'Non-LUC Emissions (tCO2e/ha/yr)', 'value': 'nonluc_tco2ehayear'},
+                                {'label': 'Total Emissions (tCO2e/yr)', 'value': 'total_tco2eyear'},
+                                {'label': 'Total Emissions (tCO2e/ha/yr)', 'value': 'total_tco2ehayear'},
                                 {'label': 'Diversity Score', 'value': 'diversity_score'},
+                                {'label': 'Precipitation-PET Ratio', 'value': 'precipitation_pet_ratio'},
+                                {'label': 'Soil Moisture Percentile', 'value': 'soil_moisture_percentile'},
+                                {'label': 'Evapotranspiration Anomaly', 'value': 'evapotranspiration_anomaly'},
                                 {'label': 'Water Stress Index', 'value': 'water_stress_index'},
-                                {'label': 'Transpiration Anomaly', 'value': 'transpiration_anomaly'},
                                 {'label': 'Estate/Smallholder Ratio', 'value': 'estate_smallholder_ratio'},
                                 {'label': 'Area (ha) - Estate', 'value': 'area_ha_estate'},
                                 {'label': 'Area (ha) - Smallholder', 'value': 'area_ha_smallholder'},
-                                {'label': 'Area (ha) - Total', 'value': 'area_ha_total'},
                                 {'label': 'Area (ha) - Supply Shed', 'value': 'area_ha_supply_shed'},
                                 {'label': 'Area (ha) - Commodity', 'value': 'area_ha_commodity'}
                             ],
@@ -1142,10 +1274,38 @@ def create_main_layout():
 )
 def update_main_content(auth_state):
     """Update main content based on authentication state"""
+    print(f"🔐 Auth state: {auth_state}")
     if auth_state and auth_state.get('authenticated'):
+        print("✅ User authenticated, showing main layout")
         return create_main_layout()
     else:
+        print("❌ User not authenticated, showing login page")
         return create_login_page()
+
+@app.callback(
+    [Output('auth-state', 'data', allow_duplicate=True),
+     Output('session-id', 'data', allow_duplicate=True)],
+    [Input('session-id', 'data')],
+    prevent_initial_call='initial_duplicate'
+)
+def validate_session_callback(session_id):
+    """Validate session on app load and periodically"""
+    print(f"🔍 Validating session: {session_id}")
+    if session_id and validate_session(session_id):
+        # Session is valid, return current auth state
+        session_data = user_sessions.get(session_id, {})
+        print(f"✅ Session valid for user: {session_data.get('user', {}).get('email', 'Unknown')}")
+        return (
+            {'authenticated': True, 'user': session_data.get('user')},
+            session_id
+        )
+    else:
+        # Session is invalid or expired, clear it
+        print("❌ Session invalid or expired, clearing")
+        return (
+            {'authenticated': False, 'user': None},
+            None
+        )
 
 @app.callback(
     [Output('auth-state', 'data'),
@@ -1159,18 +1319,15 @@ def update_main_content(auth_state):
 )
 def handle_login(n_clicks, username, password):
     """Handle login form submission"""
+    print(f"🔐 Login attempt - n_clicks: {n_clicks}, username: {username}")
     if n_clicks and username and password:
+        # Clean up expired sessions first
+        cleanup_expired_sessions()
+        
         if validate_credentials(username, password):
             # Successful login
-            session_id = secrets.token_urlsafe(32)
-            user_sessions[session_id] = {
-                'authenticated': True,
-                'user': {
-                    'email': username,
-                    'name': username.split('@')[0].title(),
-                    'picture': None
-                }
-            }
+            session_id = create_session(username)
+            print(f"✅ Login successful for {username}, session: {session_id}")
             return (
                 {'authenticated': True, 'user': user_sessions[session_id]['user']}, 
                 session_id,
@@ -1179,6 +1336,7 @@ def handle_login(n_clicks, username, password):
             )
         else:
             # Failed login
+            print(f"❌ Login failed for {username}")
             error_msg = dbc.Alert(
                 "Invalid email or password. Please try again.",
                 color="danger",
@@ -1192,6 +1350,32 @@ def handle_login(n_clicks, username, password):
             )
     
     return {'authenticated': False, 'user': None}, None, "", {"display": "none"}
+
+@app.callback(
+    Output('session-cleanup-interval', 'disabled'),
+    [Input('session-cleanup-interval', 'n_intervals')]
+)
+def cleanup_sessions_periodically(n_intervals):
+    """Periodically clean up expired sessions"""
+    cleanup_expired_sessions()
+    return False  # Keep the interval running
+
+@app.callback(
+    [Output('auth-state', 'data', allow_duplicate=True),
+     Output('session-id', 'data', allow_duplicate=True),
+     Output('main-content', 'children', allow_duplicate=True)],
+    [Input('logout-btn', 'n_clicks')],
+    prevent_initial_call=True
+)
+def handle_logout(n_clicks):
+    """Handle logout"""
+    if n_clicks:
+        return (
+            {'authenticated': False, 'user': None},
+            None,
+            create_login_page()
+        )
+    return dash.no_update, dash.no_update, dash.no_update
 
 # Combined callback to update highlighted facility, metadata, and detail map from both chart and map clicks
 @app.callback(
@@ -1208,8 +1392,10 @@ def update_highlight_metadata_and_detail_from_clicks(chart_click_data, map_click
     """Update highlighted facility, metadata, and detail map when chart or map is clicked"""
     ctx = dash.callback_context
     
+    # Get the loaded data
+    df, _ = get_data()
+    
     # Add a small delay to make loading visible
-    import time
     time.sleep(0.3)  # 300ms delay to show loading spinner
     
     if not ctx.triggered:
@@ -1304,10 +1490,13 @@ def update_highlight_metadata_and_detail_from_clicks(chart_click_data, map_click
     [Output('detail-map', 'data'),
      Output('detail-map-data', 'data', allow_duplicate=True)],
     Input('detail-map', 'id'),
-    prevent_initial_call=False
+    prevent_initial_call='initial_duplicate'
 )
 def load_default_detail_map(_):
     """Load default detail map data on app startup"""
+    # Get the loaded data
+    df, _ = get_data()
+    
     detail_map_data = create_default_detail_map()
     
     # Also populate the detail-map-data store for the dropdown callback
@@ -2168,8 +2357,10 @@ def update_deck_map(variable, highlighted_facility, layer_toggle):
     print(f"TOGGLE: Callback triggered - layer_toggle: {layer_toggle}, variable: {variable}")
     print(f"TOGGLE: All inputs - variable: {variable}, highlighted_facility: {highlighted_facility}, layer_toggle: {layer_toggle}")
     
+    # Get the loaded data
+    df, plot_df = get_data()
+    
     # Add a small delay to make loading visible
-    import time
     time.sleep(0.5)  # 500ms delay to show loading spinner
     
     # If there's a highlighted facility, find its coordinates for custom view state
@@ -2280,9 +2471,6 @@ def update_deck_map(variable, highlighted_facility, layer_toggle):
                     'bearing': 45  # 45-degree bearing for better 3D view like detail map
                 }
             
-            # Create deck data using pydeck like the facility layer
-            import time
-            
             deck = pdk.Deck(
                 layers=[hexagon_layer],
                 initial_view_state=plot_view_state,
@@ -2330,7 +2518,6 @@ def export_main_map_data(n_clicks, layer_toggle):
     }
     
     # Add a delay to make the export process visible
-    import time
     time.sleep(3.0)  # 3 second delay to show export is happening
     
     if layer_toggle:  # Plot layer
@@ -2372,7 +2559,6 @@ def export_detail_map_data(n_clicks, stored_data):
     }
     
     # Add a delay to make the export process visible
-    import time
     time.sleep(3.0)  # 3 second delay to show export is happening
     
     # Get the current collection ID from stored data
@@ -2396,6 +2582,9 @@ def export_detail_map_data(n_clicks, stored_data):
 )
 def update_main_chart(chart_var, highlighted_facility):
     """Update single bar chart based on highlighted facility store"""
+    
+    # Get the loaded data
+    df, _ = get_data()
     
     # Handle None values from dropdown (initial load)
     if chart_var is None:
@@ -2656,7 +2845,6 @@ def update_detail_color(color_field, stored_data):
         
     except Exception as e:
         print(f"ERROR in update_detail_color: {str(e)}")
-        import traceback
         traceback.print_exc()
         return {'layers': []}, {"display": "none"}
 
@@ -2699,6 +2887,9 @@ def update_selected_points(click_info, current_selection):
 def update_metrics(highlighted_facility):
     """Update metrics based on highlighted facility or show default values"""
     
+    # Get the loaded data
+    df, _ = get_data()
+    
     if highlighted_facility:
         # Extract facility ID from the label (format: "FACILITY_ID - COMPANY_NAME")
         facility_id = highlighted_facility
@@ -2737,6 +2928,65 @@ def update_metrics(highlighted_facility):
         print(f"Error updating metrics: {e}")
         return "0", "0", "0", "0"
 
+# Add health check endpoint
+@app.server.route('/health')
+def health_check():
+    """Health check endpoint for Cloud Run"""
+    return {'status': 'healthy', 'service': 'supply-shed-visualizer'}, 200
+
+# Add TRUE streaming endpoint with pagination
+@app.server.route('/api/data/facilities')
+def get_facilities_data():
+    """Stream facility data in chunks to avoid response size limits"""
+    try:
+        # Get the loaded data
+        df, _ = get_data()
+        
+        # TRUE STREAMING: Return data in chunks
+        chunk_size = 100  # Process 100 facilities at a time
+        total_facilities = len(df)
+        
+        # For now, return first chunk (this would be called multiple times by frontend)
+        chunk_data = df.head(chunk_size).to_dict('records')
+        
+        # Check size and warn if large
+        data_size_mb = len(str(chunk_data)) / 1024 / 1024
+        if data_size_mb > 5:  # Smaller chunks
+            print(f"⚠️ Warning: Facility chunk is {data_size_mb:.1f}MB")
+        
+        return {
+            'data': chunk_data,
+            'chunk_size': chunk_size,
+            'total_count': total_facilities,
+            'has_more': len(df) > chunk_size,
+            'size_mb': round(data_size_mb, 2)
+        }
+    except Exception as e:
+        return {'error': str(e)}, 500
+
+@app.server.route('/api/data/plots')
+def get_plots_data():
+    """Stream plot data in chunks to avoid response size limits"""
+    try:
+        # Get the loaded data
+        _, plot_df = get_data()
+        
+        # Return the plot data as JSON
+        plots_data = plot_df.to_dict('records')
+        
+        # Check size and warn if large
+        data_size_mb = len(str(plots_data)) / 1024 / 1024
+        if data_size_mb > 10:
+            print(f"⚠️ Warning: Plot data response is {data_size_mb:.1f}MB")
+        
+        return {
+            'data': plots_data,
+            'count': len(plots_data),
+            'size_mb': round(data_size_mb, 2)
+        }
+    except Exception as e:
+        return {'error': str(e)}, 500
+
 if __name__ == '__main__':
     # Get port from environment variable (Cloud Run sets PORT)
     port = int(os.environ.get('PORT', 8050))
@@ -2746,6 +2996,10 @@ if __name__ == '__main__':
     print(f"   Port: {port}")
     print(f"   Debug: {debug}")
     print(f"   Project: {PROJECT_ID}")
+    print(f"   Environment: {'Cloud Run' if os.getenv('GOOGLE_CLOUD_PROJECT') else 'Local Development'}")
     print(f"   Login: william@epoch.blue / ssi123")
+    
+    # Clean up any expired sessions on startup
+    cleanup_expired_sessions()
     
     app.run(debug=debug, host='0.0.0.0', port=port)  
