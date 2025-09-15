@@ -2119,7 +2119,8 @@ def update_hovered_facility_from_map(map_click_data):
 @app.callback(
     Output('deck-map', 'tooltip'),
     Input('main-map-layer-toggle', 'value'),
-    Input('y-axis-dropdown', 'value')
+    Input('y-axis-dropdown', 'value'),
+    prevent_initial_call=True
 )
 def update_map_tooltip(layer_toggle, variable):
     """Update tooltip based on layer type"""
@@ -2160,7 +2161,8 @@ def update_map_tooltip(layer_toggle, variable):
     Output('deck-map', 'data'),
     [Input('y-axis-dropdown', 'value'),
      Input('highlighted-facility', 'data'),
-     Input('main-map-layer-toggle', 'value')]
+     Input('main-map-layer-toggle', 'value')],
+    prevent_initial_call=True
 )
 def update_deck_map(variable, highlighted_facility, layer_toggle):
     """Update the deck.gl map data and view state based on highlighted facility store"""
@@ -2392,7 +2394,8 @@ def export_detail_map_data(n_clicks, stored_data):
 @app.callback(
     Output('main-chart', 'figure'),
     [Input('y-axis-dropdown', 'value'),
-     Input('highlighted-facility', 'data')]
+     Input('highlighted-facility', 'data')],
+    prevent_initial_call=True
 )
 def update_main_chart(chart_var, highlighted_facility):
     """Update single bar chart based on highlighted facility store"""
@@ -2694,7 +2697,7 @@ def update_selected_points(click_info, current_selection):
      Output('metric-supply-shed-area', 'children'),
      Output('metric-commodity-area', 'children')],
     [Input('highlighted-facility', 'data')],
-    prevent_initial_call=False
+    prevent_initial_call=True
 )
 def update_metrics(highlighted_facility):
     """Update metrics based on highlighted facility or show default values"""
