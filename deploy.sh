@@ -70,7 +70,7 @@ gcloud run deploy ${SERVICE_NAME} \
 
 # Optional: Set up custom domain mapping
 echo "🌐 Setting up custom domain mapping..."
-CUSTOM_DOMAIN="epoch-supply-shed-viz.app"
+CUSTOM_DOMAIN="supply-shed-viz.epoch-sco2-api.com"
 
 # Check if domain mapping already exists
 if gcloud beta run domain-mappings describe ${CUSTOM_DOMAIN} --region=${REGION} &>/dev/null; then

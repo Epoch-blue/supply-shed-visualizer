@@ -130,8 +130,47 @@ app = dash.Dash(__name__, external_stylesheets=[
 app.title = "Supply Shed Visualizer | Epoch"
 
 # Login page layout
-def create_login_page():
+def create_login_page(show_loading=False):
     """Create the login page layout"""
+    if show_loading:
+        return html.Div([
+            dbc.Container([
+                dbc.Row([
+                    dbc.Col([
+                        html.Div([
+                            # Epoch logo/branding
+                            html.Div([
+                                html.Div([
+                                    html.Img(
+                                        src="assets/epoch-logo-text-blue.png",
+                                        style={'height': '80px', 'width': 'auto', 'marginBottom': '20px'},
+                                        alt="Epoch Logo"
+                                    )
+                                ], className="text-center mb-4"),
+                                html.H1("Supply Shed Visualizer", className="text-center mb-4", 
+                                       style={"color": EPOCH_COLORS['primary'], "fontWeight": "700"}),
+                                html.P("Environmental Metrics of All Palm Mills Supply Sheds in Indonesia", className="text-center mb-5", 
+                                      style={"color": EPOCH_COLORS['text_secondary'], "fontSize": "16px"})
+                            ], className="mb-5"),
+                            
+                            # Loading card
+                            dbc.Card([
+                                dbc.CardBody([
+                                    html.Div([
+                                        html.H4("Login Successful!", className="text-center mb-4", 
+                                               style={"color": EPOCH_COLORS['success']}),
+                                        html.P("Loading your dashboard...", className="text-center mb-4", 
+                                               style={"color": EPOCH_COLORS['text_secondary']}),
+                                        dbc.Spinner(html.Div(), size="lg", color="primary")
+                                    ], style={"padding": "2rem", "textAlign": "center"})
+                                ])
+                            ], style={"maxWidth": "400px", "margin": "0 auto", "boxShadow": "0 4px 6px rgba(0, 0, 0, 0.1)"})
+                        ], style={"minHeight": "100vh", "display": "flex", "flexDirection": "column", "justifyContent": "center"})
+                    ], width=12)
+                ])
+            ], fluid=True)
+        ], style={"backgroundColor": EPOCH_COLORS['background'], "minHeight": "100vh"})
+    
     return html.Div([
         dbc.Container([
             dbc.Row([
@@ -139,10 +178,17 @@ def create_login_page():
                     html.Div([
                         # Epoch logo/branding
                         html.Div([
+                            html.Div([
+                                html.Img(
+                                    src="assets/epoch-logo-text-blue.png",
+                                    style={'height': '80px', 'width': 'auto', 'marginBottom': '20px'},
+                                    alt="Epoch Logo"
+                                )
+                            ], className="text-center mb-4"),
                             html.H1("Supply Shed Visualizer", className="text-center mb-4", 
                                    style={"color": EPOCH_COLORS['primary'], "fontWeight": "700"}),
-                            html.P("Powered by Epoch", className="text-center mb-5", 
-                                  style={"color": EPOCH_COLORS['text_secondary'], "fontSize": "18px"})
+                            html.P("Environmental Metrics of All Palm Mills Supply Sheds in Indonesia", className="text-center mb-5", 
+                                  style={"color": EPOCH_COLORS['text_secondary'], "fontSize": "16px"})
                         ], className="mb-5"),
                         
                         # Login card
@@ -849,6 +895,8 @@ app.layout = html.Div([
     # Store for authentication state
     dcc.Store(id='auth-state', data={'authenticated': False, 'user': None}),
     dcc.Store(id='session-id', data=None, storage_type='local'),
+    dcc.Store(id='login-loading', data=False),
+    dcc.Interval(id='loading-timer', interval=3000, n_intervals=0, disabled=True),
     
     # Main content area
     html.Div(id='main-content'),
@@ -1272,18 +1320,35 @@ def create_main_layout():
 # Authentication callbacks
 @app.callback(
     Output('main-content', 'children'),
-    [Input('auth-state', 'data')],
+    [Input('auth-state', 'data'),
+     Input('login-loading', 'data')],
     prevent_initial_call=False
 )
-def update_main_content(auth_state):
+def update_main_content(auth_state, login_loading):
     """Update main content based on authentication state"""
-    print(f"🔐 Auth state: {auth_state}")
+    print(f"🔐 Auth state: {auth_state}, Loading: {login_loading}")
     if auth_state and auth_state.get('authenticated'):
-        print("✅ User authenticated, showing main layout")
-        return create_main_layout()
+        if login_loading:
+            print("⏳ Showing loading page with spinner")
+            return create_login_page(show_loading=True)
+        else:
+            print("✅ User authenticated, showing main layout")
+            return create_main_layout()
     else:
         print("❌ User not authenticated, showing login page")
         return create_login_page()
+
+@app.callback(
+    Output('login-spinner', 'style'),
+    [Input('auth-state', 'data')],
+    prevent_initial_call=True
+)
+def update_login_spinner(auth_state):
+    """Show/hide login spinner based on auth state"""
+    if auth_state and auth_state.get('authenticated'):
+        return {"display": "none"}  # Hide spinner when authenticated
+    else:
+        return {"display": "none"}  # Hide spinner on login page
 
 @app.callback(
     [Output('auth-state', 'data', allow_duplicate=True),
@@ -1314,7 +1379,8 @@ def validate_session_callback(session_id):
     [Output('auth-state', 'data'),
      Output('session-id', 'data'),
      Output('login-error', 'children'),
-     Output('login-error', 'style')],
+     Output('login-error', 'style'),
+     Output('login-loading', 'data')],
     [Input('login-btn', 'n_clicks')],
     [State('username-input', 'value'),
      State('password-input', 'value')],
@@ -1331,11 +1397,13 @@ def handle_login(n_clicks, username, password):
             # Successful login
             session_id = create_session(username)
             print(f"✅ Login successful for {username}, session: {session_id}")
+            print(f"🔄 Setting loading state to True")
             return (
                 {'authenticated': True, 'user': user_sessions[session_id]['user']}, 
                 session_id,
                 "",
-                {"display": "none"}
+                {"display": "none"},
+                True  # Set loading state
             )
         else:
             # Failed login
@@ -1349,10 +1417,34 @@ def handle_login(n_clicks, username, password):
                 {'authenticated': False, 'user': None}, 
                 None,
                 error_msg,
-                {"display": "block"}
+                {"display": "block"},
+                False  # Clear loading state
             )
     
-    return {'authenticated': False, 'user': None}, None, "", {"display": "none"}
+    return {'authenticated': False, 'user': None}, None, "", {"display": "none"}, False
+
+@app.callback(
+    Output('loading-timer', 'disabled'),
+    [Input('login-loading', 'data')],
+    prevent_initial_call=True
+)
+def control_loading_timer(login_loading):
+    """Start/stop the loading timer based on login loading state"""
+    print(f"⏰ Timer control: login_loading={login_loading}, disabled={not login_loading}")
+    return not login_loading  # Disable timer when not loading
+
+@app.callback(
+    Output('login-loading', 'data', allow_duplicate=True),
+    [Input('loading-timer', 'n_intervals')],
+    prevent_initial_call=True
+)
+def clear_loading_state(n_intervals):
+    """Clear loading state after timer expires"""
+    print(f"⏰ Timer expired: n_intervals={n_intervals}")
+    if n_intervals > 0:
+        print("🔄 Clearing loading state")
+        return False
+    return dash.no_update
 
 @app.callback(
     Output('session-cleanup-interval', 'disabled'),
