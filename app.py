@@ -2424,59 +2424,64 @@ def update_deck_map(variable, layer_toggle, click_info, chart_click_data):
     lat = None
     lon = None
     
-    # Handle map click
-    if click_info and 'object' in click_info and click_info['object'] is not None:
-        # Get coordinates directly from the clicked object for immediate zooming
-        obj = click_info['object']
-        lat = obj.get('latitude')
-        lon = obj.get('longitude')
-    
-    # Handle chart click
-    elif chart_click_data and 'points' in chart_click_data:
-        # Extract facility label from chart click
-        facility_label = chart_click_data['points'][0]['x']
+    # Check which input triggered the callback
+    ctx = dash.callback_context
+    if ctx.triggered:
+        trigger_id = ctx.triggered[0]['prop_id']
         
-        # Find the facility in the data and get its coordinates
-        filtered_df = df.copy()
-        
-        # Create facility_company labels to match
-        def create_facility_label(row):
-            facility_id = row.get('facility_id', 'Unknown')
-            company_name = row.get('company_name', 'Unknown')
+        # Handle chart click
+        if 'main-chart' in trigger_id and chart_click_data and 'points' in chart_click_data:
+            # Extract facility label from chart click
+            facility_label = chart_click_data['points'][0]['x']
             
-            if isinstance(facility_id, str):
-                facility_id = facility_id.strip()
-            if isinstance(company_name, str):
-                company_name = company_name.strip()
+            # Find the facility in the data and get its coordinates
+            filtered_df = df.copy()
             
-            def is_meaningful(value):
-                if pd.isna(value):
-                    return False
-                if isinstance(value, str) and value.strip().upper() in ['NA', 'N/A', 'NULL', '']:
-                    return False
-                return True
+            # Create facility_company labels to match
+            def create_facility_label(row):
+                facility_id = row.get('facility_id', 'Unknown')
+                company_name = row.get('company_name', 'Unknown')
+                
+                if isinstance(facility_id, str):
+                    facility_id = facility_id.strip()
+                if isinstance(company_name, str):
+                    company_name = company_name.strip()
+                
+                def is_meaningful(value):
+                    if pd.isna(value):
+                        return False
+                    if isinstance(value, str) and value.strip().upper() in ['NA', 'N/A', 'NULL', '']:
+                        return False
+                    return True
+                
+                facility_meaningful = is_meaningful(facility_id)
+                company_meaningful = is_meaningful(company_name)
+                
+                if facility_meaningful and company_meaningful:
+                    return f"{facility_id} - {company_name}"
+                elif facility_meaningful:
+                    return str(facility_id)
+                elif company_meaningful:
+                    return str(company_name)
+                else:
+                    return "Unknown Facility"
             
-            facility_meaningful = is_meaningful(facility_id)
-            company_meaningful = is_meaningful(company_name)
+            # Add facility_company column for matching
+            filtered_df['facility_company'] = filtered_df.apply(create_facility_label, axis=1)
             
-            if facility_meaningful and company_meaningful:
-                return f"{facility_id} - {company_name}"
-            elif facility_meaningful:
-                return str(facility_id)
-            elif company_meaningful:
-                return str(company_name)
-            else:
-                return "Unknown Facility"
+            # Find matching facility
+            matching_facility = filtered_df[filtered_df['facility_company'] == facility_label]
+            
+            if not matching_facility.empty:
+                lat = matching_facility['latitude'].iloc[0]
+                lon = matching_facility['longitude'].iloc[0]
         
-        # Add facility_company column for matching
-        filtered_df['facility_company'] = filtered_df.apply(create_facility_label, axis=1)
-        
-        # Find matching facility
-        matching_facility = filtered_df[filtered_df['facility_company'] == facility_label]
-        
-        if not matching_facility.empty:
-            lat = matching_facility['latitude'].iloc[0]
-            lon = matching_facility['longitude'].iloc[0]
+        # Handle map click
+        elif 'deck-map' in trigger_id and click_info and 'object' in click_info and click_info['object'] is not None:
+            # Get coordinates directly from the clicked object for immediate zooming
+            obj = click_info['object']
+            lat = obj.get('latitude')
+            lon = obj.get('longitude')
     
     # Create zoomed view state if we have coordinates
     if lat is not None and lon is not None:
