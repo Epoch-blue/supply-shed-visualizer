@@ -8,7 +8,7 @@ set -e
 # Configuration
 PROJECT_ID="epoch-geospatial-dev"
 SERVICE_NAME="supply-shed-visualizer"
-REGION="europe-west2"
+REGION="us-central1"
 REPOSITORY_NAME="supply-shed-repo"
 IMAGE_NAME="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY_NAME}/${SERVICE_NAME}"
 

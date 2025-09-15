@@ -7,7 +7,7 @@ set -e
 
 PROJECT_ID="epoch-geospatial-dev"
 SERVICE_NAME="supply-shed-visualizer"
-REGION="europe-west2"
+REGION="us-central1"
 CUSTOM_DOMAIN="epoch-supply-shed-viz.app"
 
 echo "🌐 Setting up custom domain for Supply Shed Visualizer"

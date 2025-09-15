@@ -88,23 +88,23 @@ gcloud services enable artifactregistry.googleapis.com
 # Create repository
 gcloud artifacts repositories create supply-shed-repo \
     --repository-format=docker \
-    --location=europe-west2 \
+    --location=us-central1 \
     --description="Docker repository for Supply Shed Visualizer"
 
 # Configure Docker authentication
-gcloud auth configure-docker europe-west2-docker.pkg.dev
+gcloud auth configure-docker us-central1-docker.pkg.dev
 ```
 
 ### 6. Build and Deploy
 ```bash
 # Build image
-gcloud builds submit --tag europe-west2-docker.pkg.dev/epoch-geospatial-dev/supply-shed-repo/supply-shed-visualizer
+gcloud builds submit --tag us-central1-docker.pkg.dev/epoch-geospatial-dev/supply-shed-repo/supply-shed-visualizer
 
 # Deploy to Cloud Run
 gcloud run deploy supply-shed-visualizer \
-    --image europe-west2-docker.pkg.dev/epoch-geospatial-dev/supply-shed-repo/supply-shed-visualizer \
+    --image us-central1-docker.pkg.dev/epoch-geospatial-dev/supply-shed-repo/supply-shed-visualizer \
     --platform managed \
-    --region europe-west2 \
+    --region us-central1 \
     --allow-unauthenticated \
     --port 8080 \
     --memory 16Gi \
@@ -193,12 +193,12 @@ The app uses simple username/password authentication:
 
 ### View Logs
 ```bash
-gcloud run services logs read supply-shed-visualizer --region europe-west2
+gcloud run services logs read supply-shed-visualizer --region us-central1
 ```
 
 ### Monitor Performance
 ```bash
-gcloud run services describe supply-shed-visualizer --region europe-west2
+gcloud run services describe supply-shed-visualizer --region us-central1
 ```
 
 ## Updating the Deployment
@@ -229,7 +229,7 @@ The script will automatically:
    - Verify the `mapbox-api-key` secret exists in Secret Manager
 
 3. **App Won't Start**
-   - Check Cloud Run logs: `gcloud run services logs read supply-shed-visualizer --region europe-west2`
+   - Check Cloud Run logs: `gcloud run services logs read supply-shed-visualizer --region us-central1`
    - Verify all environment variables are set correctly
 
 4. **Docker Build Fails**
