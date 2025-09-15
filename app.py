@@ -739,8 +739,8 @@ app.layout = html.Div([
     dcc.Store(id='auth-state', data={'authenticated': False, 'user': None}),
     dcc.Store(id='session-id', data=None),
     
-    # Main content area
-    html.Div(id='main-content')
+    # Main content area - start with login page
+    html.Div(id='main-content', children=create_login_page())
 ], style={'backgroundColor': EPOCH_COLORS['background']})
 
 # Main application layout (shown when authenticated)
@@ -1138,7 +1138,7 @@ def create_main_layout():
 @app.callback(
     Output('main-content', 'children'),
     [Input('auth-state', 'data')],
-    prevent_initial_call=False
+    prevent_initial_call=True
 )
 def update_main_content(auth_state):
     """Update main content based on authentication state"""
