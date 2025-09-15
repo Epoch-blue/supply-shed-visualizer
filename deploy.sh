@@ -9,8 +9,7 @@ set -e
 PROJECT_ID="epoch-geospatial-dev"
 SERVICE_NAME="supply-shed-visualizer"
 REGION="us-central1"
-REPOSITORY_NAME="supply-shed-repo"
-IMAGE_NAME="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY_NAME}/${SERVICE_NAME}"
+IMAGE_NAME="gcr.io/${PROJECT_ID}/${SERVICE_NAME}"
 
 echo "🚀 Deploying Supply Shed Visualizer to Cloud Run"
 echo "   Project: ${PROJECT_ID}"
@@ -28,23 +27,6 @@ gcloud services enable cloudbuild.googleapis.com
 gcloud services enable run.googleapis.com
 gcloud services enable bigquery.googleapis.com
 gcloud services enable secretmanager.googleapis.com
-gcloud services enable artifactregistry.googleapis.com
-
-# Create Artifact Registry repository if it doesn't exist
-echo "📦 Setting up Artifact Registry repository..."
-if ! gcloud artifacts repositories describe ${REPOSITORY_NAME} --location=${REGION} &>/dev/null; then
-    echo "   Creating Artifact Registry repository..."
-    gcloud artifacts repositories create ${REPOSITORY_NAME} \
-        --repository-format=docker \
-        --location=${REGION} \
-        --description="Docker repository for Supply Shed Visualizer"
-else
-    echo "   Artifact Registry repository already exists"
-fi
-
-# Configure Docker authentication
-echo "🔐 Configuring Docker authentication..."
-gcloud auth configure-docker ${REGION}-docker.pkg.dev
 
 # Build and push the Docker image
 echo "🏗️  Building and pushing Docker image..."
@@ -58,8 +40,8 @@ gcloud run deploy ${SERVICE_NAME} \
     --region ${REGION} \
     --allow-unauthenticated \
     --port 8080 \
-    --memory 8Gi \
-    --cpu 4 \
+    --memory 2Gi \
+    --cpu 2 \
     --timeout 3600 \
     --max-instances 10 \
     --set-env-vars "BIGQUERY_PROJECT_ID=${PROJECT_ID}" \

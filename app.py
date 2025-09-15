@@ -456,9 +456,9 @@ def fetch_plot_hexagon_data():
 # Load data after all functions are defined but before layout creation
 print("Loading facility data...")
 df = fetch_data()
-print(f"Loaded {len(df)} facilities")
-# Plot data will be loaded lazily when needed
-plot_df = None
+print("Loading plot hexagon data...")
+plot_df = fetch_plot_hexagon_data()
+print(f"Loaded {len(df)} facilities and {len(plot_df)} plots")
 
 # Mapbox API key
 
@@ -739,8 +739,8 @@ app.layout = html.Div([
     dcc.Store(id='auth-state', data={'authenticated': False, 'user': None}),
     dcc.Store(id='session-id', data=None),
     
-    # Main content area - start with login page
-    html.Div(id='main-content', children=create_login_page())
+    # Main content area
+    html.Div(id='main-content')
 ], style={'backgroundColor': EPOCH_COLORS['background']})
 
 # Main application layout (shown when authenticated)
@@ -1138,7 +1138,7 @@ def create_main_layout():
 @app.callback(
     Output('main-content', 'children'),
     [Input('auth-state', 'data')],
-    prevent_initial_call=True
+    prevent_initial_call=False
 )
 def update_main_content(auth_state):
     """Update main content based on authentication state"""
@@ -1303,15 +1303,11 @@ def update_highlight_metadata_and_detail_from_clicks(chart_click_data, map_click
 @app.callback(
     [Output('detail-map', 'data'),
      Output('detail-map-data', 'data', allow_duplicate=True)],
-    Input('auth-state', 'data'),
-    prevent_initial_call=True
+    Input('detail-map', 'id'),
+    prevent_initial_call=False
 )
-def load_default_detail_map(auth_state):
+def load_default_detail_map(_):
     """Load default detail map data on app startup"""
-    # Only load detail map when user is authenticated
-    if not auth_state or not auth_state.get('authenticated'):
-        return {'layers': []}, None
-    
     detail_map_data = create_default_detail_map()
     
     # Also populate the detail-map-data store for the dropdown callback
@@ -2123,8 +2119,7 @@ def update_hovered_facility_from_map(map_click_data):
 @app.callback(
     Output('deck-map', 'tooltip'),
     Input('main-map-layer-toggle', 'value'),
-    Input('y-axis-dropdown', 'value'),
-    prevent_initial_call=False
+    Input('y-axis-dropdown', 'value')
 )
 def update_map_tooltip(layer_toggle, variable):
     """Update tooltip based on layer type"""
@@ -2165,8 +2160,7 @@ def update_map_tooltip(layer_toggle, variable):
     Output('deck-map', 'data'),
     [Input('y-axis-dropdown', 'value'),
      Input('highlighted-facility', 'data'),
-     Input('main-map-layer-toggle', 'value')],
-    prevent_initial_call=True
+     Input('main-map-layer-toggle', 'value')]
 )
 def update_deck_map(variable, highlighted_facility, layer_toggle):
     """Update the deck.gl map data and view state based on highlighted facility store"""
@@ -2232,13 +2226,8 @@ def update_deck_map(variable, highlighted_facility, layer_toggle):
     # Create map based on layer type (True = Plots, False = Facilities)
     if layer_toggle:
         print(f"TOGGLE: Creating plots layer with variable: {variable}")
-        # Load plot data when needed
-        global plot_df
-        if plot_df is None:
-            print("TOGGLE: Loading plot data for first time...")
-            plot_df = fetch_plot_hexagon_data()
-            print(f"TOGGLE: Loaded plot data, shape: {plot_df.shape if not plot_df.empty else 'empty'}")
-        
+        # Use pre-loaded plot data
+        print(f"TOGGLE: Using pre-loaded plot data, shape: {plot_df.shape if not plot_df.empty else 'empty'}")
         if not plot_df.empty:
             print(f"TOGGLE: Plot data columns: {list(plot_df.columns)}")
             hexagon_layer = create_plot_hexagon_layer(plot_df, variable)
@@ -2403,8 +2392,7 @@ def export_detail_map_data(n_clicks, stored_data):
 @app.callback(
     Output('main-chart', 'figure'),
     [Input('y-axis-dropdown', 'value'),
-     Input('highlighted-facility', 'data')],
-    prevent_initial_call=True
+     Input('highlighted-facility', 'data')]
 )
 def update_main_chart(chart_var, highlighted_facility):
     """Update single bar chart based on highlighted facility store"""
@@ -2706,7 +2694,7 @@ def update_selected_points(click_info, current_selection):
      Output('metric-supply-shed-area', 'children'),
      Output('metric-commodity-area', 'children')],
     [Input('highlighted-facility', 'data')],
-    prevent_initial_call=True
+    prevent_initial_call=False
 )
 def update_metrics(highlighted_facility):
     """Update metrics based on highlighted facility or show default values"""
