@@ -2402,39 +2402,91 @@ def update_map_tooltip(layer_toggle, variable):
             }
         }
 
-# Callback to update map based on dropdown, toggle, and direct clicks
+# Callback to update map based on dropdown, toggle, and clicks (both map and chart)
 @app.callback(
     Output('deck-map', 'data'),
     [Input('y-axis-dropdown', 'value'),
      Input('main-map-layer-toggle', 'value'),
-     Input('deck-map', 'clickInfo')]
+     Input('deck-map', 'clickInfo'),
+     Input('main-chart', 'clickData')]
 )
-def update_deck_map(variable, layer_toggle, click_info):
-    """Update the deck.gl map data and view state based on dropdown, toggle, and direct clicks"""
+def update_deck_map(variable, layer_toggle, click_info, chart_click_data):
+    """Update the deck.gl map data and view state based on dropdown, toggle, and clicks (both map and chart)"""
     
     print(f"TOGGLE: Callback triggered - layer_toggle: {layer_toggle}, variable: {variable}")
-    print(f"TOGGLE: All inputs - variable: {variable}, layer_toggle: {layer_toggle}, click_info: {click_info is not None}")
+    print(f"TOGGLE: All inputs - variable: {variable}, layer_toggle: {layer_toggle}, click_info: {click_info is not None}, chart_click: {chart_click_data is not None}")
     
     # Get the loaded data
     df, plot_df = get_data()
     
-    # If there's a click on a facility, get coordinates directly for immediate zooming
+    # If there's a click on a facility (either map or chart), get coordinates for immediate zooming
     custom_view_state = None
+    lat = None
+    lon = None
+    
+    # Handle map click
     if click_info and 'object' in click_info and click_info['object'] is not None:
         # Get coordinates directly from the clicked object for immediate zooming
         obj = click_info['object']
         lat = obj.get('latitude')
         lon = obj.get('longitude')
+    
+    # Handle chart click
+    elif chart_click_data and 'points' in chart_click_data:
+        # Extract facility label from chart click
+        facility_label = chart_click_data['points'][0]['x']
         
-        if lat is not None and lon is not None:
-            # Create a zoomed view state immediately
-            custom_view_state = {
-                'latitude': lat,
-                'longitude': lon,
-                'zoom': 12,  # Zoom level - adjust as needed
-                'pitch': 0,  # 2D view
-                'bearing': 0
-            }
+        # Find the facility in the data and get its coordinates
+        filtered_df = df.copy()
+        
+        # Create facility_company labels to match
+        def create_facility_label(row):
+            facility_id = row.get('facility_id', 'Unknown')
+            company_name = row.get('company_name', 'Unknown')
+            
+            if isinstance(facility_id, str):
+                facility_id = facility_id.strip()
+            if isinstance(company_name, str):
+                company_name = company_name.strip()
+            
+            def is_meaningful(value):
+                if pd.isna(value):
+                    return False
+                if isinstance(value, str) and value.strip().upper() in ['NA', 'N/A', 'NULL', '']:
+                    return False
+                return True
+            
+            facility_meaningful = is_meaningful(facility_id)
+            company_meaningful = is_meaningful(company_name)
+            
+            if facility_meaningful and company_meaningful:
+                return f"{facility_id} - {company_name}"
+            elif facility_meaningful:
+                return str(facility_id)
+            elif company_meaningful:
+                return str(company_name)
+            else:
+                return "Unknown Facility"
+        
+        # Add facility_company column for matching
+        filtered_df['facility_company'] = filtered_df.apply(create_facility_label, axis=1)
+        
+        # Find matching facility
+        matching_facility = filtered_df[filtered_df['facility_company'] == facility_label]
+        
+        if not matching_facility.empty:
+            lat = matching_facility['latitude'].iloc[0]
+            lon = matching_facility['longitude'].iloc[0]
+    
+    # Create zoomed view state if we have coordinates
+    if lat is not None and lon is not None:
+        custom_view_state = {
+            'latitude': lat,
+            'longitude': lon,
+            'zoom': 12,  # Zoom level - adjust as needed
+            'pitch': 0,  # 2D view
+            'bearing': 0
+        }
     # Create map based on layer type (True = Plots, False = Facilities)
     if layer_toggle:
         print(f"TOGGLE: Creating plots layer with variable: {variable}")
@@ -2942,6 +2994,7 @@ def update_metrics(highlighted_facility):
     except Exception as e:
         print(f"Error updating metrics: {e}")
         return "0", "0", "0", "0"
+
 
 # Add health check endpoint
 @app.server.route('/health')
