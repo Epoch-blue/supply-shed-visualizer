@@ -1,0 +1,337 @@
+* {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.epoch-header {
+    background: linear-gradient(135deg, #376fd0 0%, #4782da 100%);
+    color: white;
+    padding: 2rem 0;
+    margin-bottom: 2rem;
+    border-radius: 0 0 12px 12px;
+    box-shadow: 0 4px 20px rgba(55, 111, 208, 0.15);
+}
+
+.epoch-header .epoch-title {
+    color: white !important;
+}
+
+.epoch-header .epoch-subtitle {
+    color: white !important;
+}
+
+.epoch-card {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+    border: 1px solid #e9ecef;
+    transition: all 0.3s ease;
+}
+
+.epoch-card:hover {
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+    transform: translateY(-2px);
+}
+
+.epoch-card-header {
+    background: #f8f9fa;
+    border-bottom: 1px solid #e9ecef;
+    border-radius: 12px 12px 0 0;
+    padding: 1rem 1.5rem;
+    font-weight: 600;
+    color: #233044;
+}
+
+.epoch-metric-card {
+    background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
+    border-left: 4px solid #376fd0;
+    padding: 1.5rem;
+    border-radius: 8px;
+    margin-bottom: 1rem;
+}
+
+.epoch-metric-value {
+    font-size: 2rem;
+    font-weight: 700;
+    color: #233044;
+    margin: 0;
+}
+
+.epoch-metric-label {
+    font-size: 0.875rem;
+    color: #6c757d;
+    margin: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.epoch-button {
+    background: linear-gradient(135deg, #376fd0 0%, #4782da 100%);
+    border: none;
+    border-radius: 8px;
+    color: white;
+    font-weight: 500;
+    padding: 0.75rem 1.5rem;
+    transition: all 0.3s ease;
+}
+
+.epoch-button:hover {
+    background: linear-gradient(135deg, #2f65cb 0%, #407ad6 100%);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(55, 111, 208, 0.3);
+}
+
+.epoch-sidebar {
+    background: #233044;
+    color: white;
+    border-radius: 12px;
+    padding: 1.5rem;
+    height: fit-content;
+}
+
+.epoch-title {
+    color: #233044;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+}
+
+.epoch-subtitle {
+    color: #6c757d;
+    font-weight: 400;
+}
+
+/* Deck.gl map styling */
+#deck-map {
+    border-radius: 8px;
+    overflow: hidden !important;
+    position: relative !important;
+    width: 100% !important;
+    height: 500px !important;
+    min-height: 500px !important;
+    max-height: 500px !important;
+    display: block !important;
+}
+
+#deck-map canvas {
+    border-radius: 8px !important;
+    width: 100% !important;
+    height: 100% !important;
+}
+
+/* Prevent map flickering */
+.deckgl-wrapper {
+    position: relative;
+    width: 100% !important;
+    height: 500px !important;
+    min-height: 500px !important;
+    max-height: 500px !important;
+}
+
+.deckgl-wrapper canvas {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+}
+
+/* Optimize canvas performance */
+#deck-map canvas {
+    will-read-frequently: true;
+    image-rendering: optimizeSpeed;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: -webkit-optimize-contrast;
+    image-rendering: optimize-contrast;
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+}
+
+/* Container constraints */
+.epoch-card {
+    position: relative !important;
+    overflow: hidden !important;
+}
+
+.epoch-card .dash-deck-container {
+    position: relative !important;
+    width: 100% !important;
+    height: 500px !important;
+    overflow: hidden !important;
+}
+
+/* Override Bootstrap column constraints for map */
+.col {
+    height: auto !important;
+    min-height: auto !important;
+    max-height: none !important;
+}
+
+/* Ensure the map column can expand */
+.dash-deck-container {
+    height: 500px !important;
+    min-height: 500px !important;
+    max-height: none !important;
+}
+
+/* Force map container to be tall */
+.dash-deck-container,
+.dash-deck-container > div,
+.dash-deck-container > div > div {
+    height: 500px !important;
+    min-height: 500px !important;
+    max-height: none !important;
+}
+
+/* Override any parent container constraints */
+.epoch-card {
+    height: auto !important;
+    min-height: auto !important;
+    max-height: none !important;
+}
+
+/* Force the map to be visible and tall */
+#deck-map,
+#deck-map > div,
+#deck-map > div > div,
+#deck-map canvas {
+    height: 500px !important;
+    min-height: 500px !important;
+    max-height: none !important;
+    display: block !important;
+    visibility: visible !important;
+}
+
+/* AGGRESSIVE OVERRIDES TO FORCE MAP SPACE */
+* {
+    box-sizing: border-box !important;
+}
+
+/* Force all containers to allow map expansion */
+.container,
+.container-fluid,
+.row,
+.col,
+[class*="col-"] {
+    height: auto !important;
+    min-height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+}
+
+/* Force the map row to expand */
+.row:has(#deck-map),
+.row:has(.dash-deck-container) {
+    height: auto !important;
+    min-height: 500px !important;
+    max-height: none !important;
+    overflow: visible !important;
+}
+
+/* Force the map column to expand */
+.col:has(#deck-map),
+.col:has(.dash-deck-container) {
+    height: auto !important;
+    min-height: 500px !important;
+    max-height: none !important;
+    overflow: visible !important;
+}
+
+/* Override any parent constraints */
+.epoch-card:has(#deck-map) {
+    height: auto !important;
+    min-height: 500px !important;
+    max-height: none !important;
+    overflow: visible !important;
+}
+
+/* Force viewport to accommodate tall map */
+html, body {
+    height: auto !important;
+    min-height: auto !important;
+    max-height: none !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+}
+
+/* Nuclear option - force everything related to map */
+#deck-map,
+#deck-map *,
+.dash-deck-container,
+.dash-deck-container *,
+.deckgl-wrapper,
+.deckgl-wrapper * {
+    height: 500px !important;
+    min-height: 500px !important;
+    max-height: none !important;
+    display: block !important;
+    visibility: visible !important;
+    position: relative !important;
+    overflow: visible !important;
+}
+
+/* Ensure map style dropdown is visible */
+#map-style-dropdown {
+    z-index: 1000 !important;
+    position: relative !important;
+    visibility: visible !important;
+    display: block !important;
+}
+
+#map-style-dropdown .Select-control {
+    z-index: 1000 !important;
+    position: relative !important;
+}
+
+#map-style-dropdown .Select-menu-outer {
+    z-index: 1001 !important;
+}
+
+/* Map container styling */
+.map-container {
+    position: relative !important;
+    width: 100% !important;
+    height: 500px !important;
+}
+
+/* Map control overlay styling */
+.map-controls-overlay {
+    position: absolute !important;
+    top: 10px !important;
+    right: 10px !important;
+    z-index: 1000 !important;
+    background-color: rgba(255, 255, 255, 0.95) !important;
+    padding: 10px !important;
+    border-radius: 8px !important;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15) !important;
+    border: 1px solid rgba(0, 0, 0, 0.1) !important;
+    min-width: 150px !important;
+}
+
+.map-controls-overlay .Select-control {
+    background-color: white !important;
+    border: 1px solid #ddd !important;
+}
+
+.map-controls-overlay .Select-menu-outer {
+    z-index: 1002 !important;
+    border: 1px solid #ddd !important;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1) !important;
+}
+
+.map-controls-overlay button {
+    background-color: #007bff !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 4px !important;
+    padding: 6px 12px !important;
+    font-size: 12px !important;
+    cursor: pointer !important;
+    transition: background-color 0.2s !important;
+}
+
+.map-controls-overlay button:hover {
+    background-color: #0056b3 !important;
+}
+ 

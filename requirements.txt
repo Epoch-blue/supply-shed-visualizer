@@ -1,0 +1,17 @@
+dash>=2.16.0
+dash-deck>=0.0.1
+pydeck>=0.8.0
+altair>=5.0.0
+vega
+google-cloud-bigquery>=3.13.0
+google-cloud-secret-manager>=2.16.0
+pandas>=2.2.0
+geopandas
+shapely
+numpy>=1.24.0
+dash-bootstrap-components>=1.5.0
+python-dotenv>=1.0.0
+db-dtypes
+google-cloud-bigquery-storage
+mapbox
+dash_daq
