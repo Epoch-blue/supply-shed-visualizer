@@ -342,6 +342,7 @@ def fetch_data():
         area_ha_estate,
         area_ha_smallholder,
         area_ha_commodity,
+        area_ha_forest,
         ST_AREA(geo) / 10000 as area_ha_supply_shed,
         SAFE_DIVIDE(area_ha_estate, area_ha_smallholder) as estate_smallholder_ratio,
         commodity_plot_no,
@@ -415,6 +416,7 @@ def fetch_facility_detail_data(facility_id, company_name, df):
             luc_tco2eyear + nonluc_tco2eyear as total_tco2eyear,
             luc_tco2ehayear + nonluc_tco2ehayear as total_tco2ehayear,
             area_ha,
+            CASE WHEN system_type = 'estate' THEN 1 ELSE 2 END as system_type,
             ST_ASGEOJSON(geo) as geometry
         FROM `{PROJECT_ID}.{DATASET_ID}.{collection_id}_plot`
         WHERE geo IS NOT NULL 
@@ -658,9 +660,9 @@ def create_deck_map(selected_points=None,
             clamped_value = max(q2, min(q98, value))
             normalized = (clamped_value - q2) / (q98 - q2)
         
-        # For diversity_score, invert the color ramp (high = good = green)
-        if 'diversity' in variable.lower():
-            normalized = 1 - normalized  # Invert for diversity
+        # For diversity_score, soil moisture, and precipitation-pet ratio, invert the color ramp (high = good = green)
+        if any(keyword in variable.lower() for keyword in ['diversity', 'soil_moisture', 'precipitation_pet']):
+            normalized = 1 - normalized  # Invert for these fields
         
         # Green to Yellow to Red color ramp
         if normalized <= 0.5:
@@ -961,13 +963,13 @@ def create_main_layout():
                     html.H3(id="metric-total-facilities", className="epoch-metric-value"),
                     html.P("Total Facilities (#)", className="epoch-metric-label")
                 ], className="epoch-metric-card")
-            ], width=3),
+            ], width=2),
             dbc.Col([
                 html.Div([
                     html.H3(id="metric-total-plots", className="epoch-metric-value"),
                     html.P("Total Plots (#)", className="epoch-metric-label")
                 ], className="epoch-metric-card")
-            ], width=3),
+            ], width=2),
             dbc.Col([
                 html.Div([
                     html.H3(id="metric-supply-shed-area", className="epoch-metric-value"),
@@ -979,7 +981,13 @@ def create_main_layout():
                     html.H3(id="metric-commodity-area", className="epoch-metric-value"),
                     html.P("Total Commodity Area (ha)", className="epoch-metric-label")
                 ], className="epoch-metric-card")
-            ], width=3)
+            ], width=3),
+            dbc.Col([
+                html.Div([
+                    html.H3(id="metric-estate-smallholder-ratio", className="epoch-metric-value"),
+                    html.P("Estate / Smallholder (%)", className="epoch-metric-label")
+                ], className="epoch-metric-card")
+            ], width=2)
         ], className="mb-4"),
         
         # Map row - split into main map (3/4) and detail map (1/4)
@@ -1214,6 +1222,7 @@ def create_main_layout():
                         dcc.Dropdown(
                             id='detail-color-dropdown',
                             options=[
+                                {'label': 'System Type (Estate/Smallholder)', 'value': 'system_type'},
                                 {'label': 'Noncompliance Area (ha)', 'value': 'noncompliance_area_ha'},
                                 {'label': 'Noncompliance Area (%)', 'value': 'noncompliance_area_perc'},
                                 {'label': 'LUC Emissions (tCO2e/yr)', 'value': 'luc_tco2eyear'},
@@ -1231,7 +1240,7 @@ def create_main_layout():
                             value='total_tco2ehayear',
                             className="epoch-dropdown",
                             style={'width': '300px', 'fontSize': '12px'}
-                        )
+                        ),
                     ], style={'padding': '0.5rem 1.5rem 0 1.5rem'}),
                     html.Div([
                         html.Div([
@@ -1269,14 +1278,53 @@ def create_main_layout():
         
         # Bottom row: Chart (2/3) + Facility metadata (1/3)
         dbc.Row([
-            # Chart (2/3 width)
+            # Charts (2/3 width)
             dbc.Col([
+                # Main chart
                 html.Div([
                     html.Div([
                         html.H5("All Facilities Chart", className="epoch-title mb-0")
                     ], className="d-flex align-items-center justify-content-between epoch-card-header"),
                     html.Div([
+                        # Dropdown for facilities chart (controls both chart and map)
+                        dcc.Dropdown(
+                            id='facilities-chart-dropdown',
+                            options=[
+                                {'label': 'Noncompliance Area (ha)', 'value': 'noncompliance_area_ha'},
+                                {'label': 'Noncompliance Area (%)', 'value': 'noncompliance_area_perc'},
+                                {'label': 'LUC Emissions (tCO2e/yr)', 'value': 'luc_tco2eyear'},
+                                {'label': 'LUC Emissions (tCO2e/ha/yr)', 'value': 'luc_tco2ehayear'},
+                                {'label': 'Non-LUC Emissions (tCO2e/yr)', 'value': 'nonluc_tco2eyear'},
+                                {'label': 'Non-LUC Emissions (tCO2e/ha/yr)', 'value': 'nonluc_tco2ehayear'},
+                                {'label': 'Total Emissions (tCO2e/yr)', 'value': 'total_tco2eyear'},
+                                {'label': 'Total Emissions (tCO2e/ha/yr)', 'value': 'total_tco2ehayear'},
+                                {'label': 'Diversity Score', 'value': 'diversity_score'},
+                                {'label': 'Precipitation-PET Ratio', 'value': 'precipitation_pet_ratio'},
+                                {'label': 'Soil Moisture Percentile', 'value': 'soil_moisture_percentile'},
+                                {'label': 'Evapotranspiration Anomaly', 'value': 'evapotranspiration_anomaly'},
+                                {'label': 'Water Stress Index', 'value': 'water_stress_index'},
+                                {'label': 'Estate/Smallholder Ratio', 'value': 'estate_smallholder_ratio'},
+                                {'label': 'Area (ha) - Estate', 'value': 'area_ha_estate'},
+                                {'label': 'Area (ha) - Smallholder', 'value': 'area_ha_smallholder'},
+                                {'label': 'Area (ha) - Supply Shed', 'value': 'area_ha_supply_shed'},
+                                {'label': 'Area (ha) - Commodity', 'value': 'area_ha_commodity'}
+                            ],
+                            value='total_tco2ehayear',
+                            clearable=False,
+                            className="epoch-dropdown",
+                            style={'marginBottom': '1rem'}
+                        ),
                         dcc.Graph(id='main-chart')
+                    ], style={'padding': '1.5rem'})
+                ], className="epoch-card mb-3"),
+                
+                # Cumulative chart
+                html.Div([
+                    html.Div([
+                        html.H5("Cumulative Analysis by Percentile", className="epoch-title mb-0")
+                    ], className="d-flex align-items-center justify-content-between epoch-card-header"),
+                    html.Div([
+                        dcc.Graph(id='cumulative-chart')
                     ], style={'padding': '1.5rem'})
                 ], className="epoch-card")
             ], width=8),
@@ -1631,21 +1679,41 @@ def get_default_metrics():
 
         # Get total supply shed area from stat_supply_shed table
         supply_shed_area_query = f"""
-        SELECT ST_AREA(ST_UNION_AGG(geo)) / 10000 as total_supply_shed_area
+        SELECT ST_AREA(ST_UNION_AGG(geo)) / 10000 as total_supply_shed_area,
+        --SUM(area_ha_forest_stat) * (ST_AREA(ST_UNION_AGG(geo)) / SUM(ST_AREA(geo))) as total_forest_area,
+        SUM(area_ha_estate) * (ST_AREA(ST_UNION_AGG(geo)) / SUM(ST_AREA(geo))) as total_estate_area,
+        SUM(area_ha_smallholder) * (ST_AREA(ST_UNION_AGG(geo)) / SUM(ST_AREA(geo))) as total_smallholder_area       
         FROM `{PROJECT_ID}.{DATASET_ID}.stat_supply_shed`
         """
         supply_shed_area_result = client.query(supply_shed_area_query).to_dataframe()
         total_supply_shed_area = supply_shed_area_result['total_supply_shed_area'].iloc[0] if not supply_shed_area_result.empty else 0
+        #total_forest_area = supply_shed_area_result['total_forest_area'].iloc[0] if not supply_shed_area_result.empty else 0
+        total_estate_area = supply_shed_area_result['total_estate_area'].iloc[0] if not supply_shed_area_result.empty else 0
+        total_smallholder_area = supply_shed_area_result['total_smallholder_area'].iloc[0] if not supply_shed_area_result.empty else 0
         
         # Handle NaN values
         if pd.isna(total_supply_shed_area):
             total_supply_shed_area = 0
+        # if pd.isna(total_forest_area):
+        #     total_forest_area = 0
+        if pd.isna(total_estate_area):
+            total_estate_area = 0
+        if pd.isna(total_smallholder_area):
+            total_smallholder_area = 0
+        
+        # Calculate estate/smallholder percentages
+        total_estate_smallholder = total_estate_area + total_smallholder_area
+        estate_percentage = (total_estate_area / total_estate_smallholder * 100) if total_estate_smallholder > 0 else 0
+        smallholder_percentage = (total_smallholder_area / total_estate_smallholder * 100) if total_estate_smallholder > 0 else 0
+        estate_smallholder_ratio = f"{estate_percentage:.1f}% / {smallholder_percentage:.1f}%"
         
         final_metrics = {
             'total_facilities': total_facilities,
             'total_plots': total_plots,
             'total_commodity_area': total_commodity_area,
-            'total_supply_shed_area': total_supply_shed_area
+            'total_supply_shed_area': total_supply_shed_area,
+            #'total_forest_area': total_forest_area,
+            'estate_smallholder_ratio': estate_smallholder_ratio
         }
         return final_metrics
     except Exception as e:
@@ -1654,7 +1722,9 @@ def get_default_metrics():
             'total_facilities': len(df),
             'total_plots': 0,
             'total_commodity_area': 0,
-            'total_supply_shed_area': 0
+            'total_supply_shed_area': 0,
+            #'total_forest_area': 0,
+            'estate_smallholder_ratio': "0.0% / 0.0%"
         }
 
 
@@ -2047,6 +2117,7 @@ def create_default_detail_map():
                 area_ha,
                 luc_tco2eyear + nonluc_tco2eyear as total_tco2eyear,
                 luc_tco2ehayear + nonluc_tco2ehayear as total_tco2ehayear,
+                CASE WHEN system_type = 'estate' THEN 1 ELSE 2 END as system_type,
                 ST_ASGEOJSON(geo) as geometry
             FROM `{PROJECT_ID}.{DATASET_ID}.{default_collection_id}_plot`
             WHERE geo IS NOT NULL 
@@ -2149,9 +2220,9 @@ def create_detail_map(plot_df, supply_shed_df, color_field='total_tco2ehayear'):
         if pd.isna(value) or value is None:
             return [128, 128, 128, 255]  # Gray for missing values (fully opaque)
         
-        # Use 5th and 95th percentiles for more aggressive stretching
-        q2 = data_series.quantile(0.05)
-        q98 = data_series.quantile(0.95)
+        # Use 2nd and 98th percentiles for consistent stretching with other charts
+        q2 = data_series.quantile(0.02)
+        q98 = data_series.quantile(0.98)
         
         if q98 == q2:
             normalized = 0.5
@@ -2160,9 +2231,9 @@ def create_detail_map(plot_df, supply_shed_df, color_field='total_tco2ehayear'):
             clamped_value = max(q2, min(q98, value))
             normalized = (clamped_value - q2) / (q98 - q2)
         
-        # For diversity_score, invert the color ramp (high = good = green)
-        if 'diversity' in field_name.lower():
-            normalized = 1 - normalized  # Invert for diversity
+        # For diversity_score, soil moisture, and precipitation-pet ratio, invert the color ramp (high = good = green)
+        if any(keyword in field_name.lower() for keyword in ['diversity', 'soil_moisture', 'precipitation_pet']):
+            normalized = 1 - normalized  # Invert for these fields
         
         # Bright green-to-red color ramp: green -> yellow -> orange -> red
         if normalized < 0.33:
@@ -2193,10 +2264,21 @@ def create_detail_map(plot_df, supply_shed_df, color_field='total_tco2ehayear'):
         color_column = None
     
     if color_column:
-        plot_data['color'] = plot_data[color_column].apply(
-            lambda x: get_color_ramp(x, plot_data[color_column], color_field)
-        )
-        
+        if color_field == 'system_type':
+            # Special handling for system type: estate=purple, smallholder=yellow
+            def get_system_type_color(system_type):
+                if system_type == 1:  # Estate
+                    return [0, 255, 255, 255]  # Cyan
+                elif system_type == 2:  # Smallholder
+                    return [255, 255, 0, 255]  # Yellow
+                else:
+                    return [128, 128, 128, 255]  # Gray for unknown
+            
+            plot_data['color'] = plot_data[color_column].apply(get_system_type_color)
+        else:
+            plot_data['color'] = plot_data[color_column].apply(
+                lambda x: get_color_ramp(x, plot_data[color_column], color_field)
+            )
     else:
         # Fallback to gray if no color column available
         plot_data['color'] = [[128, 128, 128, 255] for _ in range(len(plot_data))]  # Gray for all rows
@@ -2366,7 +2448,7 @@ def create_detail_map(plot_df, supply_shed_df, color_field='total_tco2ehayear'):
 @app.callback(
     Output('deck-map', 'tooltip'),
     Input('main-map-layer-toggle', 'value'),
-    Input('y-axis-dropdown', 'value')
+    Input('facilities-chart-dropdown', 'value')
 )
 def update_map_tooltip(layer_toggle, variable):
     """Update tooltip based on layer type"""
@@ -2405,7 +2487,7 @@ def update_map_tooltip(layer_toggle, variable):
 # Callback to update map based on dropdown, toggle, and clicks (both map and chart)
 @app.callback(
     Output('deck-map', 'data'),
-    [Input('y-axis-dropdown', 'value'),
+    [Input('facilities-chart-dropdown', 'value'),
      Input('main-map-layer-toggle', 'value'),
      Input('deck-map', 'clickInfo'),
      Input('main-chart', 'clickData')]
@@ -2649,7 +2731,7 @@ def export_detail_map_data(n_clicks, stored_data):
 # Callback to update chart based on highlighted facility store
 @app.callback(
     Output('main-chart', 'figure'),
-    [Input('y-axis-dropdown', 'value'),
+    [Input('facilities-chart-dropdown', 'value'),
      Input('highlighted-facility', 'data')]
 )
 def update_main_chart(chart_var, highlighted_facility):
@@ -2667,6 +2749,219 @@ def update_main_chart(chart_var, highlighted_facility):
     
     # Create chart with selected variable and highlighting
     fig = create_chart(filtered_df, chart_var, EPOCH_COLORS['primary'], highlighted_facility)
+    
+    return fig
+
+# Callback to update cumulative chart
+@app.callback(
+    Output('cumulative-chart', 'figure'),
+    [Input('facilities-chart-dropdown', 'value'),
+     Input('deck-map', 'clickInfo'),
+     Input('main-chart', 'clickData')]
+)
+def update_cumulative_chart(chart_var, click_info, chart_click_data):
+    """Update cumulative chart showing percentile ranges"""
+    
+    # Get the loaded data
+    df, _ = get_data()
+    
+    # Use the facilities chart dropdown value
+    variable = chart_var if chart_var is not None else 'total_tco2eyear'
+    
+    # Always show all data (no filtering)
+    filtered_df = df.copy()
+    
+    # Create cumulative chart
+    fig = create_cumulative_chart(filtered_df, variable)
+    
+    return fig
+
+# Callbacks to sync the two main dropdowns
+@app.callback(
+    Output('y-axis-dropdown', 'value'),
+    [Input('facilities-chart-dropdown', 'value')],
+    prevent_initial_call=True
+)
+def sync_facilities_to_map(facilities_value):
+    """Sync facilities chart dropdown to map dropdown"""
+    return facilities_value
+
+@app.callback(
+    Output('facilities-chart-dropdown', 'value'),
+    [Input('y-axis-dropdown', 'value')],
+    prevent_initial_call=True
+)
+def sync_map_to_facilities(map_value):
+    """Sync map dropdown to facilities chart dropdown"""
+    return map_value
+
+def create_cumulative_chart(filtered_df, y_column):
+    """Create cumulative chart showing percentile ranges"""
+    
+    # Sort data the same way as the main chart (ascending by y_column)
+    df_sorted = filtered_df.sort_values(y_column, ascending=True).reset_index(drop=True)
+    
+    # Define percentile ranges (ascending order for x-axis labels)
+    percentile_ranges = [
+        (0, 5, "0-5th"),
+        (5, 25, "5-25th"),
+        (25, 50, "25-50th"),
+        (50, 75, "50-75th"),
+        (75, 95, "75-95th"),
+        (95, 100, "95-100th")
+    ]
+    
+    # Use the same color ramp function as the main chart
+    def get_color_ramp(value):
+        """Convert value to color ramp using quantile stretching with appropriate direction based on field type"""
+        # Use the SAME quantiles as the map for consistency
+        q2 = filtered_df[y_column].quantile(0.02)
+        q98 = filtered_df[y_column].quantile(0.98)
+        
+        if q98 == q2:
+            normalized = 0.5
+        else:
+            # Clamp value to quantile range and normalize
+            clamped_value = max(q2, min(q98, value))
+            normalized = (clamped_value - q2) / (q98 - q2)
+        
+        # For diversity_score, soil moisture, and precipitation-pet ratio, invert the color ramp (high = good = green)
+        if any(keyword in y_column.lower() for keyword in ['diversity', 'soil_moisture', 'precipitation_pet']):
+            normalized = 1 - normalized  # Invert for these fields
+        
+        # Green to Yellow to Red color ramp
+        if normalized <= 0.5:
+            # Green to Yellow
+            ratio = normalized * 2
+            r = int(255 * ratio)
+            g = 255
+            b = 0
+        else:
+            # Yellow to Red
+            ratio = (normalized - 0.5) * 2
+            r = 255
+            g = int(255 * (1 - ratio))
+            b = 0
+        
+        return f'rgb({r}, {g}, {b})'
+    
+    # Calculate cumulative values for each percentile range
+    cumulative_data = []
+    
+    for lower, upper, label in percentile_ranges:
+        # Get data in this percentile range
+        lower_percentile = filtered_df[y_column].quantile(lower / 100)
+        upper_percentile = filtered_df[y_column].quantile(upper / 100)
+        
+        # Filter data in this range
+        range_data = filtered_df[
+            (filtered_df[y_column] >= lower_percentile) & 
+            (filtered_df[y_column] <= upper_percentile)
+        ]
+        
+        if not range_data.empty:
+            # Determine if we should sum or average based on the indicator
+            if any(keyword in y_column.lower() for keyword in ['total', 'area_ha']) and 'tco2ehayear' not in y_column.lower():
+                # Sum for totals and areas (but not per-hectare values)
+                # This includes: total_tco2eyear, area_ha_* (but excludes total_tco2ehayear)
+                cumulative_value = range_data[y_column].sum()
+                operation = "Sum"
+            else:
+                # Average for per-hectare values, percentages, scores, and ratios
+                # This includes: total_tco2ehayear, diversity_score, water_stress_index, noncompliance_area_perc
+                cumulative_value = range_data[y_column].mean()
+                # Multiply noncompliance_area_perc by 100 to get proper percentage
+                if 'noncompliance_area_perc' in y_column:
+                    cumulative_value = cumulative_value * 100
+                operation = "Average"
+            
+            # Get the representative value for this percentile range (median of the range)
+            median_value = range_data[y_column].median()
+            
+            cumulative_data.append({
+                'percentile_range': label,
+                'value': cumulative_value,
+                'count': len(range_data),
+                'operation': operation,
+                'median_value': median_value  # For color calculation
+            })
+    
+    # Create the chart
+    fig = go.Figure()
+    
+    if not cumulative_data:
+        # Return empty chart if no data
+        fig.update_layout(
+            title="No Data Available",
+            xaxis_title="Percentile Range",
+            yaxis_title="Value",
+            showlegend=False,
+            plot_bgcolor='white',
+            paper_bgcolor='white',
+            font=dict(family="Arial", size=12),
+            margin=dict(l=50, r=50, t=50, b=50)
+        )
+        return fig
+    
+    # Calculate bar widths proportional to percentile ranges
+    def get_bar_width(percentile_range):
+        if percentile_range == "0-5th":
+            return 0.5  # 5% range
+        elif percentile_range == "5-25th":
+            return 1.0  # 20% range
+        elif percentile_range == "25-50th":
+            return 1.0  # 25% range
+        elif percentile_range == "50-75th":
+            return 1.0  # 25% range
+        elif percentile_range == "75-95th":
+            return 1.0  # 20% range
+        elif percentile_range == "95-100th":
+            return 0.5  # 5% range
+        else:
+            return 1.0  # default
+    
+    bar_widths = [get_bar_width(d['percentile_range']) for d in cumulative_data]
+    
+    # Reverse the data order so high values are on the left (to match facilities chart)
+    reversed_data = list(reversed(cumulative_data))
+    reversed_widths = list(reversed(bar_widths))
+    
+    # Add bars with colors using the same color ramp as the main chart
+    fig.add_trace(go.Bar(
+        x=[d['percentile_range'] for d in reversed_data],
+        y=[d['value'] for d in reversed_data],
+        marker_color=[get_color_ramp(d['median_value']) for d in reversed_data],
+        text=[f"{d['value']:,.2f}<br>({d['count']} facilities)" for d in reversed_data],
+        textposition='auto',
+        hovertemplate='<b>%{x} Percentile</b><br>' +
+                     f'{cumulative_data[0]["operation"]}: %{{y:,.0f}}<br>' +
+                     'Facilities: %{customdata}<br>' +
+                     '<extra></extra>',
+        customdata=[d['count'] for d in reversed_data],
+        width=reversed_widths
+    ))
+    
+    # Update layout
+    operation = cumulative_data[0]['operation']
+    title = f"Cumulative {operation} by Percentile Range" if operation == "Sum" else f"{operation} by Percentile Range"
+    
+    fig.update_layout(
+        title=title,
+        xaxis_title="Percentile Range",
+        yaxis_title=f"{operation} of {y_column.replace('_', ' ').title()}",
+        showlegend=False,
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        font=dict(family="Arial", size=12),
+        margin=dict(l=50, r=50, t=50, b=50),
+        xaxis=dict(
+            categoryorder='array',
+            categoryarray=['95-100th', '75-95th', '50-75th', '25-50th', '5-25th', '0-5th']
+        )
+    )
+    
+    # Format y-axis
+    fig.update_yaxes(tickformat=",.0f")
     
     return fig
 
@@ -2789,9 +3084,9 @@ def create_chart(filtered_df, y_column, chart_color, highlighted_facility=None):
     # Create color scale for bars using quantile stretching (same as map)
     def get_color_ramp(value):
         """Convert value to color ramp using quantile stretching with appropriate direction based on field type"""
-        # Use quantile stretching (2nd and 98th percentiles) to handle outliers better
-        q2 = df_sorted[y_column].quantile(0.02)
-        q98 = df_sorted[y_column].quantile(0.98)
+        # Use the SAME quantiles as the map for consistency
+        q2 = df[y_column].quantile(0.02)
+        q98 = df[y_column].quantile(0.98)
         
         if q98 == q2:
             normalized = 0.5
@@ -2800,9 +3095,9 @@ def create_chart(filtered_df, y_column, chart_color, highlighted_facility=None):
             clamped_value = max(q2, min(q98, value))
             normalized = (clamped_value - q2) / (q98 - q2)
         
-        # For diversity_score, invert the color ramp (high = good = green)
-        if 'diversity' in y_column.lower():
-            normalized = 1 - normalized  # Invert for diversity
+        # For diversity_score, soil moisture, and precipitation-pet ratio, invert the color ramp (high = good = green)
+        if any(keyword in y_column.lower() for keyword in ['diversity', 'soil_moisture', 'precipitation_pet']):
+            normalized = 1 - normalized  # Invert for these fields
         
         # Green to Yellow to Red color ramp
         if normalized <= 0.5:
@@ -2848,7 +3143,9 @@ def create_chart(filtered_df, y_column, chart_color, highlighted_facility=None):
     ))
     
     # Add percentile reference lines
-    fig.add_vline(x=len(df_sorted) * 0.75, line_dash="dash", line_color="#00FF00", 
+    fig.add_vline(x=len(df_sorted) * 0.95, line_dash="dash", line_color="#90EE90", 
+                  line_width=3, annotation_text="95th percentile", annotation_position="top")
+    fig.add_vline(x=len(df_sorted) * 0.75, line_dash="dash", line_color="#228B22", 
                   line_width=3, annotation_text="75th percentile", annotation_position="top")
     fig.add_vline(x=len(df_sorted) * 0.50, line_dash="dash", line_color="#FFD700", 
                   line_width=3, annotation_text="50th percentile", annotation_position="top")
@@ -2890,6 +3187,17 @@ def create_chart(filtered_df, y_column, chart_color, highlighted_facility=None):
 
 
 
+
+
+# Callback to reset detail dropdown when new data is loaded
+@app.callback(
+    Output('detail-color-dropdown', 'value'),
+    Input('detail-map-data', 'data'),
+    prevent_initial_call=True
+)
+def reset_detail_dropdown_on_new_data(stored_data):
+    """Reset detail dropdown to default when new data is loaded"""
+    return 'total_tco2ehayear'
 
 # Add callback for detail color dropdown
 @app.callback(
@@ -2952,7 +3260,8 @@ def update_selected_points(click_info, current_selection):
     [Output('metric-total-facilities', 'children'),
      Output('metric-total-plots', 'children'),
      Output('metric-supply-shed-area', 'children'),
-     Output('metric-commodity-area', 'children')],
+     Output('metric-commodity-area', 'children'),
+     Output('metric-estate-smallholder-ratio', 'children')],
     [Input('highlighted-facility', 'data')],
     prevent_initial_call=False
 )
@@ -2979,11 +3288,22 @@ def update_metrics(highlighted_facility):
         
         if facility_data is not None and not facility_data.empty:
             facility_row = facility_data.iloc[0]
+            supply_shed_area = facility_row.get('area_ha_supply_shed', 0)
+            estate_area = facility_row.get('area_ha_estate', 0)
+            smallholder_area = facility_row.get('area_ha_smallholder', 0)
+            
+            # Calculate estate/smallholder percentages for this facility
+            total_estate_smallholder = estate_area + smallholder_area
+            estate_percentage = (estate_area / total_estate_smallholder * 100) if total_estate_smallholder > 0 else 0
+            smallholder_percentage = (smallholder_area / total_estate_smallholder * 100) if total_estate_smallholder > 0 else 0
+            estate_smallholder_ratio = f"{estate_percentage:.1f}% / {smallholder_percentage:.1f}%"
+            
             return (
                 f"{1:,}",  # Single facility
                 f"{facility_row.get('commodity_plot_no', 0):,}",
-                f"{facility_row.get('area_ha_supply_shed', 0):,.0f}",
-                f"{facility_row.get('area_ha_commodity', 0):,.0f}"
+                f"{supply_shed_area:,.0f}",
+                f"{facility_row.get('area_ha_commodity', 0):,.0f}",
+                estate_smallholder_ratio
             )
     
     # Default metrics from database
@@ -2993,12 +3313,13 @@ def update_metrics(highlighted_facility):
             f"{metrics['total_facilities']:,}",
             f"{metrics['total_plots']:,}",
             f"{metrics['total_supply_shed_area']:,.0f}",
-            f"{metrics['total_commodity_area']:,.0f}"
+            f"{metrics['total_commodity_area']:,.0f}",
+            metrics['estate_smallholder_ratio']
         )
         return result
     except Exception as e:
         print(f"Error updating metrics: {e}")
-        return "0", "0", "0", "0"
+        return "0", "0", "0", "0", "0.0% / 0.0%"
 
 
 # Add health check endpoint
