@@ -321,35 +321,52 @@ def fetch_data():
     
     query = f"""
     SELECT 
-        facility_id,
-        company_name,
-        country,
-        facility_geo,
-        collection_id,
-        noncompliance_area_ha,
-        noncompliance_area_perc,
-        luc_tco2eyear,
-        nonluc_tco2eyear,
-        luc_tco2ehayear,
-        nonluc_tco2ehayear,
-        total_tco2eyear,
-        total_tco2ehayear,
-        diversity_score,
-        water_stress_index,
-        precipitation_pet_ratio,
-        soil_moisture_percentile,
-        evapotranspiration_anomaly,
-        area_ha_estate,
-        area_ha_smallholder,
-        area_ha_commodity,
-        area_ha_forest,
-        ST_AREA(geo) / 10000 as area_ha_supply_shed,
-        SAFE_DIVIDE(area_ha_estate, area_ha_smallholder) as estate_smallholder_ratio,
-        commodity_plot_no,
-        ST_X(ST_GEOGFROMTEXT(facility_geo)) as longitude,
-        ST_Y(ST_GEOGFROMTEXT(facility_geo)) as latitude
-    FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`
-    WHERE facility_geo IS NOT NULL
+        a.facility_id,
+        a.company_name,
+        a.country,
+        a.facility_geo,
+        a.collection_id,
+        a.noncompliance_area_ha,
+        a.noncompliance_area_perc,
+        a.luc_tco2eyear,
+        a.nonluc_tco2eyear,
+        a.luc_tco2ehayear,
+        a.nonluc_tco2ehayear,
+        a.total_tco2eyear,
+        a.total_tco2ehayear,
+        a.diversity_score,
+        a.water_stress_index,
+        a.precipitation_pet_ratio,
+        a.soil_moisture_percentile,
+        a.evapotranspiration_anomaly,
+        a.area_ha_estate,
+        a.area_ha_smallholder,
+        a.area_ha_commodity,
+        a.area_ha_forest,
+        ST_AREA(a.geo) / 10000 as area_ha_supply_shed,
+        SAFE_DIVIDE(a.area_ha_estate, a.area_ha_smallholder) as estate_smallholder_ratio,
+        a.commodity_plot_no,
+        ST_X(ST_GEOGFROMTEXT(a.facility_geo)) as longitude,
+        ST_Y(ST_GEOGFROMTEXT(a.facility_geo)) as latitude,
+        b.group, 
+        b.mill_name, 
+        b.capacity_tonnes_ffb_hour * 300 * 20 as annual_capacity_ton,
+        -- Overall Risk Indicator: weighted combination of total_tco2ehayear, diversity_score, water_stress_index, and noncompliance_area_perc (25% each)
+        -- Using percentile-based normalization to ensure equal contribution regardless of value ranges
+        (
+            -- Normalize total_tco2ehayear using percentiles (0-1 scale, higher = more risk)
+            PERCENT_RANK() OVER (ORDER BY a.total_tco2ehayear) * 0.25 +
+            -- Normalize diversity_score using percentiles (0-1 scale, inverted so higher = more risk)
+            (1 - PERCENT_RANK() OVER (ORDER BY a.diversity_score)) * 0.25 +
+            -- Normalize water_stress_index using percentiles (0-1 scale, higher = more risk)
+            PERCENT_RANK() OVER (ORDER BY a.water_stress_index) * 0.25 +
+            -- Normalize noncompliance_area_perc using percentiles (0-1 scale, higher = more risk)
+            PERCENT_RANK() OVER (ORDER BY a.noncompliance_area_perc) * 0.25
+        ) as overall_risk_indicator
+    FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}` a LEFT JOIN
+    `{PROJECT_ID}.{DATASET_ID}.stat_supply_shed_trase_metadata` b 
+    ON a.facility_id = b.uml_id and a.company_name = b.company
+    WHERE a.facility_geo IS NOT NULL
     """
     
     try:
@@ -417,6 +434,17 @@ def fetch_facility_detail_data(facility_id, company_name, df):
             luc_tco2ehayear + nonluc_tco2ehayear as total_tco2ehayear,
             area_ha,
             CASE WHEN system_type = 'estate' THEN 1 ELSE 2 END as system_type,
+            -- Overall Risk Indicator for plot data (using percentile-based normalization)
+            (
+                -- Normalize total_tco2ehayear using percentiles (0-1 scale, higher = more risk)
+                PERCENT_RANK() OVER (ORDER BY luc_tco2ehayear + nonluc_tco2ehayear) * 0.25 +
+                -- Normalize diversity_score using percentiles (0-1 scale, inverted so higher = more risk)
+                (1 - PERCENT_RANK() OVER (ORDER BY diversity_score)) * 0.25 +
+                -- Normalize water_stress_index using percentiles (0-1 scale, higher = more risk)
+                PERCENT_RANK() OVER (ORDER BY water_stress_index) * 0.25 +
+                -- Normalize noncompliance_area_perc using percentiles (0-1 scale, higher = more risk)
+                PERCENT_RANK() OVER (ORDER BY noncompliance_area_perc) * 0.25
+            ) as overall_risk_indicator,
             ST_ASGEOJSON(geo) as geometry
         FROM `{PROJECT_ID}.{DATASET_ID}.{collection_id}_plot`
         WHERE geo IS NOT NULL 
@@ -591,25 +619,41 @@ print("🚀 Initializing app with lazy data loading...")
 df = pd.DataFrame()
 plot_df = pd.DataFrame()
 data_loaded = False
+plot_data_loaded = False
 
 def load_data_on_demand():
-    """Load data only when needed to avoid large startup responses"""
-    global df, plot_df, data_loaded
+    """Load facility data only when needed to avoid large startup responses"""
+    global df, data_loaded
     if not data_loaded:
         print("Loading facility data...")
         df = fetch_data()
+        data_loaded = True
+        print(f"✅ Loaded {len(df)} facilities (lazy loading)")
+    return df
+
+def load_plot_data_on_demand():
+    """Load plot hexagon data only when needed (when plot layer is toggled)"""
+    global plot_df, plot_data_loaded
+    if not plot_data_loaded:
         print("Loading plot hexagon data...")
         plot_df = fetch_plot_hexagon_data()
-        data_loaded = True
-        print(f"✅ Loaded {len(df)} facilities and {len(plot_df)} plots (lazy loading)")
-    return df, plot_df
+        plot_data_loaded = True
+        print(f"✅ Loaded {len(plot_df)} plots (lazy loading)")
+    return plot_df
 
 def get_data():
-    """Get the loaded data (no loading if already loaded)"""
-    global df, plot_df, data_loaded
+    """Get the loaded facility data (no loading if already loaded)"""
+    global df, data_loaded
     if not data_loaded:
         return load_data_on_demand()
-    return df, plot_df
+    return df
+
+def get_plot_data():
+    """Get the loaded plot data (loads on demand if not already loaded)"""
+    global plot_df, plot_data_loaded
+    if not plot_data_loaded:
+        return load_plot_data_on_demand()
+    return plot_df
 
 # Mapbox API key
 
@@ -621,8 +665,8 @@ def create_deck_map(selected_points=None,
                     highlighted_facility=None
                     ):
     """Create deck.gl map configuration"""
-    # Get the loaded data
-    df, _ = get_data()
+    # Get the loaded facility data
+    df = get_data()
     
     # Always show all data (no filtering by selected_points)
     map_data = df.copy()
@@ -975,13 +1019,13 @@ def create_main_layout():
                     html.H3(id="metric-supply-shed-area", className="epoch-metric-value"),
                     html.P("Total Supply Shed Area (ha)", className="epoch-metric-label")
                 ], className="epoch-metric-card")
-            ], width=3),
+            ], width=2),
             dbc.Col([
                 html.Div([
                     html.H3(id="metric-commodity-area", className="epoch-metric-value"),
                     html.P("Total Commodity Area (ha)", className="epoch-metric-label")
                 ], className="epoch-metric-card")
-            ], width=3),
+            ], width=2),
             dbc.Col([
                 html.Div([
                     html.H3(id="metric-estate-smallholder-ratio", className="epoch-metric-value"),
@@ -1040,6 +1084,7 @@ def create_main_layout():
                         dcc.Dropdown(
                             id='y-axis-dropdown',
                             options=[
+                                {'label': 'Overall Risk Indicator', 'value': 'overall_risk_indicator'},
                                 {'label': 'Noncompliance Area (ha)', 'value': 'noncompliance_area_ha'},
                                 {'label': 'Noncompliance Area (%)', 'value': 'noncompliance_area_perc'},
                                 {'label': 'LUC Emissions (tCO2e/yr)', 'value': 'luc_tco2eyear'},
@@ -1059,7 +1104,7 @@ def create_main_layout():
                                 {'label': 'Area (ha) - Supply Shed', 'value': 'area_ha_supply_shed'},
                                 {'label': 'Area (ha) - Commodity', 'value': 'area_ha_commodity'}
                             ],
-                            value='total_tco2ehayear',
+                            value='overall_risk_indicator',
                             clearable=False,
                             className="epoch-dropdown",
                             style={'width': '300px', 'fontSize': '12px'}
@@ -1222,6 +1267,7 @@ def create_main_layout():
                         dcc.Dropdown(
                             id='detail-color-dropdown',
                             options=[
+                                {'label': 'Overall Risk Indicator', 'value': 'overall_risk_indicator'},
                                 {'label': 'System Type (Estate/Smallholder)', 'value': 'system_type'},
                                 {'label': 'Noncompliance Area (ha)', 'value': 'noncompliance_area_ha'},
                                 {'label': 'Noncompliance Area (%)', 'value': 'noncompliance_area_perc'},
@@ -1237,7 +1283,7 @@ def create_main_layout():
                                 {'label': 'Evapotranspiration Anomaly', 'value': 'evapotranspiration_anomaly'},
                                 {'label': 'Water Stress Index', 'value': 'water_stress_index'}
                             ],
-                            value='total_tco2ehayear',
+                            value='overall_risk_indicator',
                             className="epoch-dropdown",
                             style={'width': '300px', 'fontSize': '12px'}
                         ),
@@ -1290,6 +1336,7 @@ def create_main_layout():
                         dcc.Dropdown(
                             id='facilities-chart-dropdown',
                             options=[
+                                {'label': 'Overall Risk Indicator', 'value': 'overall_risk_indicator'},
                                 {'label': 'Noncompliance Area (ha)', 'value': 'noncompliance_area_ha'},
                                 {'label': 'Noncompliance Area (%)', 'value': 'noncompliance_area_perc'},
                                 {'label': 'LUC Emissions (tCO2e/yr)', 'value': 'luc_tco2eyear'},
@@ -1309,7 +1356,7 @@ def create_main_layout():
                                 {'label': 'Area (ha) - Supply Shed', 'value': 'area_ha_supply_shed'},
                                 {'label': 'Area (ha) - Commodity', 'value': 'area_ha_commodity'}
                             ],
-                            value='total_tco2ehayear',
+                            value='overall_risk_indicator',
                             clearable=False,
                             className="epoch-dropdown",
                             style={'marginBottom': '1rem'}
@@ -1321,7 +1368,18 @@ def create_main_layout():
                 # Cumulative chart
                 html.Div([
                     html.Div([
-                        html.H5("Cumulative Analysis by Percentile", className="epoch-title mb-0")
+                        html.H5("Cumulative Analysis by Percentile", className="epoch-title mb-0"),
+                        html.Div([
+                            html.Label("Unweighted", style={"fontSize": "12px", "color": "#666", "marginRight": "8px"}),
+                            daq.ToggleSwitch(
+                                id='pie-chart-weight-toggle',
+                                value=True,  # True = Weighted, False = Unweighted
+                                color="#007bff",
+                                size=40,
+                                style={"margin": "0 8px"}
+                            ),
+                            html.Label("Weighted", style={"fontSize": "12px", "color": "#666", "marginLeft": "8px"})
+                        ], className="d-flex align-items-center")
                     ], className="d-flex align-items-center justify-content-between epoch-card-header"),
                     html.Div([
                         dcc.Graph(id='cumulative-chart')
@@ -1537,8 +1595,8 @@ def update_highlight_metadata_and_detail_from_clicks(chart_click_data, map_click
     """Update highlighted facility, metadata, and detail map when chart or map is clicked"""
     ctx = dash.callback_context
     
-    # Get the loaded data
-    df, _ = get_data()
+    # Get the loaded facility data
+    df = get_data()
     
 
     if not ctx.triggered:
@@ -1637,8 +1695,8 @@ def update_highlight_metadata_and_detail_from_clicks(chart_click_data, map_click
 )
 def load_default_detail_map(_):
     """Load default detail map data on app startup"""
-    # Get the loaded data
-    df, _ = get_data()
+    # Get the loaded facility data
+    df = get_data()
     
     detail_map_data = create_default_detail_map()
     
@@ -2118,6 +2176,17 @@ def create_default_detail_map():
                 luc_tco2eyear + nonluc_tco2eyear as total_tco2eyear,
                 luc_tco2ehayear + nonluc_tco2ehayear as total_tco2ehayear,
                 CASE WHEN system_type = 'estate' THEN 1 ELSE 2 END as system_type,
+                -- Overall Risk Indicator for plot data (using percentile-based normalization)
+                (
+                    -- Normalize total_tco2ehayear using percentiles (0-1 scale, higher = more risk)
+                    PERCENT_RANK() OVER (ORDER BY luc_tco2ehayear + nonluc_tco2ehayear) * 0.25 +
+                    -- Normalize diversity_score using percentiles (0-1 scale, inverted so higher = more risk)
+                    (1 - PERCENT_RANK() OVER (ORDER BY diversity_score)) * 0.25 +
+                    -- Normalize water_stress_index using percentiles (0-1 scale, higher = more risk)
+                    PERCENT_RANK() OVER (ORDER BY water_stress_index) * 0.25 +
+                    -- Normalize noncompliance_area_perc using percentiles (0-1 scale, higher = more risk)
+                    PERCENT_RANK() OVER (ORDER BY noncompliance_area_perc) * 0.25
+                ) as overall_risk_indicator,
                 ST_ASGEOJSON(geo) as geometry
             FROM `{PROJECT_ID}.{DATASET_ID}.{default_collection_id}_plot`
             WHERE geo IS NOT NULL 
@@ -2265,7 +2334,7 @@ def create_detail_map(plot_df, supply_shed_df, color_field='total_tco2ehayear'):
     
     if color_column:
         if color_field == 'system_type':
-            # Special handling for system type: estate=purple, smallholder=yellow
+            # Special handling for system type: estate=cyan, smallholder=yellow
             def get_system_type_color(system_type):
                 if system_type == 1:  # Estate
                     return [0, 255, 255, 255]  # Cyan
@@ -2498,8 +2567,13 @@ def update_deck_map(variable, layer_toggle, click_info, chart_click_data):
     print(f"TOGGLE: Callback triggered - layer_toggle: {layer_toggle}, variable: {variable}")
     print(f"TOGGLE: All inputs - variable: {variable}, layer_toggle: {layer_toggle}, click_info: {click_info is not None}, chart_click: {chart_click_data is not None}")
     
-    # Get the loaded data
-    df, plot_df = get_data()
+    # Get the loaded facility data
+    df = get_data()
+    
+    # Only load plot data if we're switching to plot layer
+    plot_df = pd.DataFrame()  # Default empty
+    if layer_toggle:  # If plot layer is toggled on
+        plot_df = get_plot_data()
     
     # If there's a click on a facility (either map or chart), get coordinates for immediate zooming
     custom_view_state = None
@@ -2737,12 +2811,12 @@ def export_detail_map_data(n_clicks, stored_data):
 def update_main_chart(chart_var, highlighted_facility):
     """Update single bar chart based on highlighted facility store"""
     
-    # Get the loaded data
-    df, _ = get_data()
+    # Get the loaded facility data
+    df = get_data()
     
     # Handle None values from dropdown (initial load)
     if chart_var is None:
-        chart_var = 'total_tco2ehayear'
+        chart_var = 'overall_risk_indicator'
     
     # Always show all data (no filtering)
     filtered_df = df.copy()
@@ -2757,22 +2831,23 @@ def update_main_chart(chart_var, highlighted_facility):
     Output('cumulative-chart', 'figure'),
     [Input('facilities-chart-dropdown', 'value'),
      Input('deck-map', 'clickInfo'),
-     Input('main-chart', 'clickData')]
+     Input('main-chart', 'clickData'),
+     Input('pie-chart-weight-toggle', 'value')]
 )
-def update_cumulative_chart(chart_var, click_info, chart_click_data):
+def update_cumulative_chart(chart_var, click_info, chart_click_data, is_weighted):
     """Update cumulative chart showing percentile ranges"""
     
-    # Get the loaded data
-    df, _ = get_data()
+    # Get the loaded facility data
+    df = get_data()
     
     # Use the facilities chart dropdown value
-    variable = chart_var if chart_var is not None else 'total_tco2eyear'
+    variable = chart_var if chart_var is not None else 'overall_risk_indicator'
     
     # Always show all data (no filtering)
     filtered_df = df.copy()
     
     # Create cumulative chart
-    fig = create_cumulative_chart(filtered_df, variable)
+    fig = create_cumulative_chart(filtered_df, variable, is_weighted)
     
     return fig
 
@@ -2795,7 +2870,7 @@ def sync_map_to_facilities(map_value):
     """Sync map dropdown to facilities chart dropdown"""
     return map_value
 
-def create_cumulative_chart(filtered_df, y_column):
+def create_cumulative_chart(filtered_df, y_column, is_weighted=True):
     """Create cumulative chart showing percentile ranges"""
     
     # Sort data the same way as the main chart (ascending by y_column)
@@ -2845,8 +2920,16 @@ def create_cumulative_chart(filtered_df, y_column):
         
         return f'rgb({r}, {g}, {b})'
     
-    # Calculate cumulative values for each percentile range
+    # Calculate cumulative values for each percentile range, grouped by 'group'
     cumulative_data = []
+    capacity_data = []
+    
+    # Get unique groups for consistent colors
+    unique_groups = filtered_df['group'].dropna().unique()
+    group_colors = {
+        group: f'hsl({i * 360 / len(unique_groups)}, 70%, 50%)' 
+        for i, group in enumerate(unique_groups)
+    }
     
     for lower, upper, label in percentile_ranges:
         # Get data in this percentile range
@@ -2862,29 +2945,73 @@ def create_cumulative_chart(filtered_df, y_column):
         if not range_data.empty:
             # Determine if we should sum or average based on the indicator
             if any(keyword in y_column.lower() for keyword in ['total', 'area_ha']) and 'tco2ehayear' not in y_column.lower():
-                # Sum for totals and areas (but not per-hectare values)
-                # This includes: total_tco2eyear, area_ha_* (but excludes total_tco2ehayear)
-                cumulative_value = range_data[y_column].sum()
                 operation = "Sum"
             else:
-                # Average for per-hectare values, percentages, scores, and ratios
-                # This includes: total_tco2ehayear, diversity_score, water_stress_index, noncompliance_area_perc
-                cumulative_value = range_data[y_column].mean()
-                # Multiply noncompliance_area_perc by 100 to get proper percentage
-                if 'noncompliance_area_perc' in y_column:
-                    cumulative_value = cumulative_value * 100
                 operation = "Average"
             
-            # Get the representative value for this percentile range (median of the range)
-            median_value = range_data[y_column].median()
+            # Group by 'group' and calculate values (weighted or unweighted)
+            group_values = {}
+            
+            for group in unique_groups:
+                group_data = range_data[range_data['group'] == group]
+                if not group_data.empty:
+                    # Calculate the indicator value for this group
+                    if operation == "Sum":
+                        indicator_value = group_data[y_column].sum()
+                    else:
+                        indicator_value = group_data[y_column].mean()
+                        # Multiply noncompliance_area_perc by 100 to get proper percentage
+                        if 'noncompliance_area_perc' in y_column:
+                            indicator_value = indicator_value * 100
+                    
+                    if is_weighted:
+                        # Weight the indicator value by annual capacity
+                        annual_capacity = group_data['annual_capacity_ton'].sum()
+                        if annual_capacity > 0:
+                            group_values[group] = indicator_value * annual_capacity
+                        else:
+                            group_values[group] = 0
+                    else:
+                        # Use unweighted indicator value
+                        group_values[group] = indicator_value
             
             cumulative_data.append({
                 'percentile_range': label,
-                'value': cumulative_value,
+                'group_values': group_values,
                 'count': len(range_data),
-                'operation': operation,
-                'median_value': median_value  # For color calculation
+                'operation': operation
             })
+    
+    # Get top 10 groups by total value for legend
+    all_group_totals = {}
+    for group in unique_groups:
+        total_value = 0
+        for data_point in cumulative_data:
+            total_value += data_point['group_values'].get(group, 0)
+        all_group_totals[group] = total_value
+    
+    # Sort groups by total value and get top 10
+    top_10_groups = sorted(all_group_totals.items(), key=lambda x: x[1], reverse=True)[:10]
+    top_10_group_names = [group for group, _ in top_10_groups]
+    
+    # Calculate total values for each percentile range to determine pie sizes
+    percentile_totals = {}
+    for data_point in cumulative_data:
+        total_value = sum(data_point['group_values'].values())
+        percentile_totals[data_point['percentile_range']] = total_value
+    
+    # Normalize sizes (minimum size of 0.3, maximum of 1.0)
+    max_total = max(percentile_totals.values()) if percentile_totals.values() else 1
+    min_total = min(percentile_totals.values()) if percentile_totals.values() else 1
+    size_range = max_total - min_total if max_total != min_total else 1
+    
+    normalized_sizes = {}
+    for percentile, total in percentile_totals.items():
+        if size_range > 0:
+            normalized_size = 0.3 + 0.7 * ((total - min_total) / size_range)
+        else:
+            normalized_size = 0.65  # Default size if all values are the same
+        normalized_sizes[percentile] = normalized_size
     
     # Create the chart
     fig = go.Figure()
@@ -2924,44 +3051,131 @@ def create_cumulative_chart(filtered_df, y_column):
     
     # Reverse the data order so high values are on the left (to match facilities chart)
     reversed_data = list(reversed(cumulative_data))
-    reversed_widths = list(reversed(bar_widths))
     
-    # Add bars with colors using the same color ramp as the main chart
-    fig.add_trace(go.Bar(
-        x=[d['percentile_range'] for d in reversed_data],
-        y=[d['value'] for d in reversed_data],
-        marker_color=[get_color_ramp(d['median_value']) for d in reversed_data],
-        text=[f"{d['value']:,.2f}<br>({d['count']} facilities)" for d in reversed_data],
-        textposition='auto',
-        hovertemplate='<b>%{x} Percentile</b><br>' +
-                     f'{cumulative_data[0]["operation"]}: %{{y:,.0f}}<br>' +
-                     'Facilities: %{customdata}<br>' +
-                     '<extra></extra>',
-        customdata=[d['count'] for d in reversed_data],
-        width=reversed_widths
-    ))
+    # Create pie charts for each percentile range
+    from plotly.subplots import make_subplots
     
-    # Update layout
+    # Create subplots with 1 row and 6 columns for 6 percentile ranges
+    fig = make_subplots(
+        rows=1, cols=6,
+        specs=[[{'type': 'pie'}, {'type': 'pie'}, {'type': 'pie'}, 
+                {'type': 'pie'}, {'type': 'pie'}, {'type': 'pie'}]],
+        subplot_titles=[d['percentile_range'] for d in reversed_data]
+    )
+    
+    for i, data_point in enumerate(reversed_data):
+        row = 1
+        col = i + 1
+        
+        # Prepare data for this pie chart
+        labels = []
+        values = []
+        colors = []
+        
+        for group in unique_groups:
+            value = data_point['group_values'].get(group, 0)
+            if value > 0:  # Only include groups with values
+                labels.append(str(group) if group is not None else 'Unknown')
+                values.append(value)
+                colors.append(group_colors.get(group, '#999999'))
+        
+        # Get the size for this percentile range
+        pie_size = normalized_sizes.get(data_point['percentile_range'], 0.65)
+        
+        # Add pie chart for this percentile range
+        fig.add_trace(
+            go.Pie(
+                labels=labels,
+                values=values,
+                marker_colors=colors,
+                textinfo='none',
+                       hovertemplate=f'<b>{data_point["percentile_range"]} Percentile</b><br>' +
+                                     'Group: %{label}<br>' +
+                                     f'{"Weighted" if is_weighted else "Unweighted"} {cumulative_data[0]["operation"]}: %{{value:,.2f}}<br>' +
+                                     'Percentage: %{percent}<br>' +
+                                     f'Total Contribution: {sum(values):,.2f}<br>' +
+                                     '<extra></extra>',
+                showlegend=False,
+                scalegroup="pies"
+            ),
+            row=row, col=col
+        )
+    
+    # Add a separate legend trace for top 10 groups
+    if top_10_group_names:
+        legend_labels = []
+        legend_colors = []
+        for group in top_10_group_names:
+            legend_labels.append(str(group) if group is not None else 'Unknown')
+            legend_colors.append(group_colors.get(group, '#999999'))
+        
+        # Add invisible trace for legend
+        fig.add_trace(
+            go.Scatter(
+                x=[None], y=[None],
+                mode='markers',
+                marker=dict(size=10, color=legend_colors[0]),
+                name=legend_labels[0],
+                showlegend=True
+            )
+        )
+        
+        # Add remaining legend entries
+        for i in range(1, len(legend_labels)):
+            fig.add_trace(
+                go.Scatter(
+                    x=[None], y=[None],
+                    mode='markers',
+                    marker=dict(size=10, color=legend_colors[i]),
+                    name=legend_labels[i],
+                    showlegend=True
+                )
+            )
+    
+    # Update layout for pie charts
     operation = cumulative_data[0]['operation']
-    title = f"Cumulative {operation} by Percentile Range" if operation == "Sum" else f"{operation} by Percentile Range"
+    weight_text = "Weighted by Annual Production Capacity" if is_weighted else "Unweighted"
+    title = f"{operation} by Percentile Range ({weight_text})"
     
     fig.update_layout(
         title=title,
-        xaxis_title="Percentile Range",
-        yaxis_title=f"{operation} of {y_column.replace('_', ' ').title()}",
-        showlegend=False,
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.15,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=10),
+            bgcolor="rgba(255,255,255,0.8)",
+            bordercolor="rgba(0,0,0,0.2)",
+            borderwidth=1
+        ),
         plot_bgcolor='white',
         paper_bgcolor='white',
         font=dict(family="Arial", size=12),
-        margin=dict(l=50, r=50, t=50, b=50),
-        xaxis=dict(
-            categoryorder='array',
-            categoryarray=['95-100th', '75-95th', '50-75th', '25-50th', '5-25th', '0-5th']
-        )
+        margin=dict(l=20, r=20, t=80, b=120),
+        height=500,
+        uniformtext_minsize=12,
+        uniformtext_mode='hide',
+        # Hide x and y axis labels for pie charts
+        xaxis=dict(showticklabels=False, showgrid=False, zeroline=False),
+        yaxis=dict(showticklabels=False, showgrid=False, zeroline=False)
     )
     
-    # Format y-axis
-    fig.update_yaxes(tickformat=",.0f")
+    # Update pie charts to use proportional sizing
+    for i, trace in enumerate(fig.data):
+        if isinstance(trace, go.Pie):
+            percentile_range = reversed_data[i]['percentile_range']
+            pie_size = normalized_sizes.get(percentile_range, 0.65)
+            # Scale the pie chart size
+            trace.update(
+                scalegroup="pies",
+                domain=dict(
+                    x=[(i)/6 + (1-pie_size)/12, (i+1)/6 - (1-pie_size)/12],
+                    y=[0.1 + (1-pie_size)/4, 0.9 - (1-pie_size)/4]
+                )
+            )
     
     return fig
 
@@ -3197,7 +3411,7 @@ def create_chart(filtered_df, y_column, chart_color, highlighted_facility=None):
 )
 def reset_detail_dropdown_on_new_data(stored_data):
     """Reset detail dropdown to default when new data is loaded"""
-    return 'total_tco2ehayear'
+    return 'overall_risk_indicator'
 
 # Add callback for detail color dropdown
 @app.callback(
@@ -3268,8 +3482,8 @@ def update_selected_points(click_info, current_selection):
 def update_metrics(highlighted_facility):
     """Update metrics based on highlighted facility or show default values"""
     
-    # Get the loaded data
-    df, _ = get_data()
+    # Get the loaded facility data
+    df = get_data()
     
     if highlighted_facility:
         # Extract facility ID from the label (format: "FACILITY_ID - COMPANY_NAME")
@@ -3362,8 +3576,8 @@ def get_facilities_data():
 def get_plots_data():
     """Stream plot data in chunks to avoid response size limits"""
     try:
-        # Get the loaded data
-        _, plot_df = get_data()
+        # Get the loaded plot data
+        plot_df = get_plot_data()
         
         # Return the plot data as JSON
         plots_data = plot_df.to_dict('records')
