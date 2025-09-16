@@ -3002,13 +3002,70 @@ def create_cumulative_chart(filtered_df, y_column, is_weighted=True):
         for group in unique_groups
     }
     
-    for lower, upper, label in percentile_ranges:
-        # Handle group field differently since it's categorical
-        if y_column == 'group':
-            # For group field, we'll use a different approach - just take all data
-            # and group by the actual group values
-            range_data = filtered_df.copy()
+    # Handle group field differently since it's categorical
+    if y_column == 'group':
+        # For group field, create a single pie chart showing all groups
+        # Skip percentile ranges and just show the overall group distribution
+        range_data = filtered_df.copy()
+        
+        # Calculate total capacity for normalization within this range (only needed for weighted mode)
+        range_total_capacity = 0
+        if is_weighted:
+            range_total_capacity = range_data['annual_capacity_ton'].sum()
+        
+        # Group by 'group' and calculate values (weighted or unweighted)
+        group_values = {}
+        
+        for group in unique_groups:
+            group_data = range_data[range_data['group'] == group]
+            if not group_data.empty:
+                # For group field, we'll just count the number of facilities in each group
+                indicator_value = len(group_data)  # Count of facilities
+                
+                if is_weighted:
+                    # For weighted mode, show the actual average indicator value for this group
+                    # The weighting affects the pie slice size, not the displayed value
+                    group_values[group] = indicator_value
+                else:
+                    # Use unweighted count
+                    group_values[group] = indicator_value
+        
+        # Calculate pie slice sizes (weighted by capacity if in weighted mode)
+        pie_slice_sizes = {}
+        if is_weighted:
+            for group in unique_groups:
+                group_data = range_data[range_data['group'] == group]
+                if not group_data.empty:
+                    # Weight by annual capacity (normalized within this range)
+                    annual_capacity = group_data['annual_capacity_ton'].sum()
+                    if annual_capacity > 0 and range_total_capacity > 0:
+                        pie_slice_sizes[group] = annual_capacity / range_total_capacity
+                    else:
+                        pie_slice_sizes[group] = 0
         else:
+            # Unweighted: use equal proportions
+            pie_slice_sizes = {group: 1.0 / len(unique_groups) for group in unique_groups}
+        
+        # Normalize pie slice sizes to sum to 1
+        total_slice_size = sum(pie_slice_sizes.values())
+        if total_slice_size > 0:
+            pie_slice_sizes = {group: size / total_slice_size for group, size in pie_slice_sizes.items()}
+        
+        # Calculate total contribution for pie sizing
+        total_contribution = len(range_data)  # For group field, it's just the count
+        
+        # Create a single data point for all groups
+        cumulative_data = [{
+            'percentile_range': 'All Groups',
+            'group_values': group_values,
+            'pie_slice_sizes': pie_slice_sizes,
+            'count': len(range_data),
+            'total_contribution': total_contribution,
+            'operation': 'Count'
+        }]
+    else:
+        # For numeric fields, use percentile ranges
+        for lower, upper, label in percentile_ranges:
             # Get data in this percentile range
             lower_percentile = filtered_df[y_column].quantile(lower / 100)
             upper_percentile = filtered_df[y_column].quantile(upper / 100)
@@ -3018,46 +3075,87 @@ def create_cumulative_chart(filtered_df, y_column, is_weighted=True):
                 (filtered_df[y_column] >= lower_percentile) & 
                 (filtered_df[y_column] <= upper_percentile)
             ]
-        
-        if not range_data.empty:
-            # Determine if we should sum or average based on the indicator
-            if any(keyword in y_column.lower() for keyword in ['total', 'area_ha']) and 'tco2ehayear' not in y_column.lower():
-                operation = "Sum"
-            else:
-                operation = "Average"
             
-            # Group by 'group' and calculate values (weighted or unweighted)
-            group_values = {}
-            
-            for group in unique_groups:
-                group_data = range_data[range_data['group'] == group]
-                if not group_data.empty:
-                    # Calculate the indicator value for this group
-                    if operation == "Sum":
-                        indicator_value = group_data[y_column].sum()
-                    else:
-                        indicator_value = group_data[y_column].mean()
-                        # Multiply noncompliance_area_perc by 100 to get proper percentage
-                        if 'noncompliance_area_perc' in y_column:
-                            indicator_value = indicator_value * 100
-                    
-                    if is_weighted:
-                        # Weight the indicator value by annual capacity
-                        annual_capacity = group_data['annual_capacity_ton'].sum()
-                        if annual_capacity > 0:
-                            group_values[group] = indicator_value * annual_capacity
+            if not range_data.empty:
+                # Calculate total capacity for normalization within this percentile range (only needed for weighted mode)
+                range_total_capacity = 0
+                if is_weighted:
+                    range_total_capacity = range_data['annual_capacity_ton'].sum()
+                
+                # Determine if we should sum or average based on the indicator
+                if any(keyword in y_column.lower() for keyword in ['total', 'area_ha']) and 'tco2ehayear' not in y_column.lower():
+                    operation = "Sum"
+                else:
+                    operation = "Average"
+                
+                # Group by 'group' and calculate values (weighted or unweighted)
+                group_values = {}
+                
+                for group in unique_groups:
+                    group_data = range_data[range_data['group'] == group]
+                    if not group_data.empty:
+                        # Calculate the indicator value for this group
+                        if operation == "Sum":
+                            indicator_value = group_data[y_column].sum()
                         else:
-                            group_values[group] = 0
-                    else:
-                        # Use unweighted indicator value
-                        group_values[group] = indicator_value
-            
-            cumulative_data.append({
-                'percentile_range': label,
-                'group_values': group_values,
-                'count': len(range_data),
-                'operation': operation
-            })
+                            indicator_value = group_data[y_column].mean()
+                            # Multiply noncompliance_area_perc by 100 to get proper percentage
+                            if 'noncompliance_area_perc' in y_column:
+                                indicator_value = indicator_value * 100
+                        
+                        if is_weighted:
+                            # For weighted mode, show the actual average indicator value for this group
+                            # The weighting affects the pie slice size, not the displayed value
+                            group_values[group] = indicator_value
+                        else:
+                            # Use unweighted indicator value
+                            group_values[group] = indicator_value
+                
+                # Calculate pie slice sizes (weighted by capacity if in weighted mode)
+                pie_slice_sizes = {}
+                if is_weighted:
+                    for group in unique_groups:
+                        group_data = range_data[range_data['group'] == group]
+                        if not group_data.empty:
+                            # Weight by annual capacity (normalized within this percentile range)
+                            annual_capacity = group_data['annual_capacity_ton'].sum()
+                            if annual_capacity > 0 and range_total_capacity > 0:
+                                pie_slice_sizes[group] = annual_capacity / range_total_capacity
+                            else:
+                                pie_slice_sizes[group] = 0
+                else:
+                    # Unweighted: use equal proportions
+                    pie_slice_sizes = {group: 1.0 / len(unique_groups) for group in unique_groups}
+                
+                # Normalize pie slice sizes to sum to 1
+                total_slice_size = sum(pie_slice_sizes.values())
+                if total_slice_size > 0:
+                    pie_slice_sizes = {group: size / total_slice_size for group, size in pie_slice_sizes.items()}
+                
+                # Calculate total contribution for pie sizing
+                if operation == 'Average':
+                    # For average indicators: facility_count × average_score
+                    facility_count = len(range_data)
+                    average_score = range_data[y_column].mean()
+                    # Multiply noncompliance_area_perc by 100 to get proper percentage
+                    if 'noncompliance_area_perc' in y_column:
+                        average_score = average_score * 100
+                    total_contribution = facility_count * average_score
+                else:  # Sum case
+                    # For sum indicators: sum of all values in this range
+                    total_contribution = range_data[y_column].sum()
+                    # Multiply noncompliance_area_perc by 100 to get proper percentage
+                    if 'noncompliance_area_perc' in y_column:
+                        total_contribution = total_contribution * 100
+                
+                cumulative_data.append({
+                    'percentile_range': label,
+                    'group_values': group_values,
+                    'pie_slice_sizes': pie_slice_sizes,
+                    'count': len(range_data),
+                    'total_contribution': total_contribution,
+                    'operation': operation
+                })
     
     # Get top 10 groups by total value for legend
     all_group_totals = {}
@@ -3071,11 +3169,11 @@ def create_cumulative_chart(filtered_df, y_column, is_weighted=True):
     top_10_groups = sorted(all_group_totals.items(), key=lambda x: x[1], reverse=True)[:10]
     top_10_group_names = [group for group, _ in top_10_groups]
     
-    # Calculate total values for each percentile range to determine pie sizes
+    # Calculate total contribution for each percentile range to determine pie sizes
     percentile_totals = {}
     for data_point in cumulative_data:
-        total_value = sum(data_point['group_values'].values())
-        percentile_totals[data_point['percentile_range']] = total_value
+        # Use the pre-calculated total contribution
+        percentile_totals[data_point['percentile_range']] = data_point['total_contribution']
     
     # Normalize sizes (minimum size of 0.3, maximum of 1.0)
     max_total = max(percentile_totals.values()) if percentile_totals.values() else 1
@@ -3089,6 +3187,7 @@ def create_cumulative_chart(filtered_df, y_column, is_weighted=True):
         else:
             normalized_size = 0.65  # Default size if all values are the same
         normalized_sizes[percentile] = normalized_size
+    
     
     # Create the chart
     fig = go.Figure()
@@ -3132,12 +3231,24 @@ def create_cumulative_chart(filtered_df, y_column, is_weighted=True):
     # Create pie charts for each percentile range
     from plotly.subplots import make_subplots
     
+    # Calculate total contribution for percentage calculation
+    total_all_contributions = sum(percentile_totals.values())
+    
+    # Create subplot titles with percentage of total contribution
+    subplot_titles = []
+    for data_point in reversed_data:
+        percentile_range = data_point['percentile_range']
+        contribution = percentile_totals.get(percentile_range, 0)
+        percentage = (contribution / total_all_contributions * 100) if total_all_contributions > 0 else 0
+        subplot_titles.append(f"{percentile_range}<br>({percentage:.1f}%)")
+    
     # Create subplots with 1 row and 6 columns for 6 percentile ranges
     fig = make_subplots(
         rows=1, cols=6,
         specs=[[{'type': 'pie'}, {'type': 'pie'}, {'type': 'pie'}, 
                 {'type': 'pie'}, {'type': 'pie'}, {'type': 'pie'}]],
-        subplot_titles=[d['percentile_range'] for d in reversed_data]
+        subplot_titles=subplot_titles,
+        vertical_spacing=0.15  # Add more space between subplot titles and plots
     )
     
     for i, data_point in enumerate(reversed_data):
@@ -3148,12 +3259,17 @@ def create_cumulative_chart(filtered_df, y_column, is_weighted=True):
         labels = []
         values = []
         colors = []
+        indicator_values = []  # Store indicator values for hover template
         
         for group in unique_groups:
-            value = data_point['group_values'].get(group, 0)
-            if value > 0:  # Only include groups with values
+            # Use pie_slice_sizes for the actual pie slice proportions
+            slice_size = data_point['pie_slice_sizes'].get(group, 0)
+            # Use group_values for the hover display (actual indicator values)
+            indicator_value = data_point['group_values'].get(group, 0)
+            if slice_size > 0:  # Only include groups with slice sizes
                 labels.append(str(group) if group is not None else 'Unknown')
-                values.append(value)
+                values.append(slice_size)  # Use slice size for pie proportions
+                indicator_values.append(indicator_value)  # Store for hover
                 group_color = group_colors.get(group, [153, 153, 153])
                 if isinstance(group_color, list):
                     colors.append(f'rgb({group_color[0]}, {group_color[1]}, {group_color[2]})')
@@ -3163,7 +3279,10 @@ def create_cumulative_chart(filtered_df, y_column, is_weighted=True):
         # Get the size for this percentile range
         pie_size = normalized_sizes.get(data_point['percentile_range'], 0.65)
         
-        # Add pie chart for this percentile range
+        # Add pie chart for this percentile range with proportional sizing using hole size
+        # Convert pie_size (0.3-1.0) to hole size (0.7-0.0) - inverse relationship
+        hole_size = 1.0 - pie_size
+        
         fig.add_trace(
             go.Pie(
                 labels=labels,
@@ -3172,12 +3291,12 @@ def create_cumulative_chart(filtered_df, y_column, is_weighted=True):
                 textinfo='none',
                        hovertemplate=f'<b>{data_point["percentile_range"]} Percentile</b><br>' +
                                      'Group: %{label}<br>' +
-                                     f'{"Weighted" if is_weighted else "Unweighted"} {cumulative_data[0]["operation"]}: %{{value:,.2f}}<br>' +
-                                     'Percentage: %{percent}<br>' +
-                                     f'Total Contribution: {sum(values):,.2f}<br>' +
+                                     f'{cumulative_data[0]["operation"]}: %{{customdata:.2f}}<br>' +
+                                     'Slice Size: %{percent}<br>' +
                                      '<extra></extra>',
+                       customdata=indicator_values,
                 showlegend=False,
-                scalegroup="pies"
+                hole=hole_size
             ),
             row=row, col=col
         )
@@ -3239,7 +3358,7 @@ def create_cumulative_chart(filtered_df, y_column, is_weighted=True):
         plot_bgcolor='white',
         paper_bgcolor='white',
         font=dict(family="Arial", size=12),
-        margin=dict(l=20, r=20, t=80, b=120),
+        margin=dict(l=20, r=20, t=100, b=120),  # Increased top margin
         height=500,
         uniformtext_minsize=12,
         uniformtext_mode='hide',
@@ -3248,19 +3367,6 @@ def create_cumulative_chart(filtered_df, y_column, is_weighted=True):
         yaxis=dict(showticklabels=False, showgrid=False, zeroline=False)
     )
     
-    # Update pie charts to use proportional sizing
-    for i, trace in enumerate(fig.data):
-        if isinstance(trace, go.Pie):
-            percentile_range = reversed_data[i]['percentile_range']
-            pie_size = normalized_sizes.get(percentile_range, 0.65)
-            # Scale the pie chart size
-            trace.update(
-                scalegroup="pies",
-                domain=dict(
-                    x=[(i)/6 + (1-pie_size)/12, (i+1)/6 - (1-pie_size)/12],
-                    y=[0.1 + (1-pie_size)/4, 0.9 - (1-pie_size)/4]
-                )
-            )
     
     return fig
 
