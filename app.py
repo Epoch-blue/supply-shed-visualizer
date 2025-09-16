@@ -725,7 +725,49 @@ def create_deck_map(selected_points=None,
         return [r, g, b, 200]  # Add alpha for transparency
     
     # Add color column to the data
-    map_data['color'] = map_data[variable].apply(get_color_ramp)
+    if variable == 'group':
+        # Handle categorical coloring for group field
+        def get_group_color(group_value):
+            """Get categorical color for group values"""
+            if pd.isna(group_value) or group_value is None:
+                return [128, 128, 128, 200]  # Gray for missing values
+            
+            # Create a hash-based color for consistent coloring
+            import hashlib
+            hash_obj = hashlib.md5(str(group_value).encode())
+            hash_int = int(hash_obj.hexdigest()[:8], 16)
+            
+            # Generate more vibrant RGB values from hash
+            # Use different parts of the hash for each color component
+            r = ((hash_int & 0xFF0000) >> 16) % 256
+            g = ((hash_int & 0x00FF00) >> 8) % 256  
+            b = (hash_int & 0x0000FF) % 256
+            
+            # Boost saturation and ensure bright, contrasting colors
+            # Make at least one color component bright (200+) and one darker (50-)
+            if r > g and r > b:
+                r = max(200, r)  # Make red bright
+                g = min(150, g)  # Keep green moderate
+                b = min(150, b)  # Keep blue moderate
+            elif g > r and g > b:
+                g = max(200, g)  # Make green bright
+                r = min(150, r)  # Keep red moderate
+                b = min(150, b)  # Keep blue moderate
+            else:
+                b = max(200, b)  # Make blue bright
+                r = min(150, r)  # Keep red moderate
+                g = min(150, g)  # Keep green moderate
+            
+            # Ensure minimum brightness
+            r = max(80, r)
+            g = max(80, g)
+            b = max(80, b)
+            
+            return [r, g, b, 200]
+        
+        map_data['color'] = map_data[variable].apply(get_group_color)
+    else:
+        map_data['color'] = map_data[variable].apply(get_color_ramp)
     
     # Highlight clicked facility if specified
     if highlighted_facility:
@@ -765,7 +807,10 @@ def create_deck_map(selected_points=None,
             if facility_company == highlighted_facility:
                 return [255, 255, 0, 255]  # Bright yellow for highlighting
             else:
-                return get_color_ramp(row[variable])
+                if variable == 'group':
+                    return get_group_color(row[variable])
+                else:
+                    return get_color_ramp(row[variable])
         
         map_data['color'] = map_data.apply(get_highlighted_color, axis=1)
         # Add highlight flag
@@ -1001,38 +1046,28 @@ def create_main_layout():
     # Main content
     dbc.Container([
         # Top metrics row
-        dbc.Row([
-            dbc.Col([
-                html.Div([
-                    html.H3(id="metric-total-facilities", className="epoch-metric-value"),
-                    html.P("Total Facilities (#)", className="epoch-metric-label")
-                ], className="epoch-metric-card")
-            ], width=2),
-            dbc.Col([
-                html.Div([
-                    html.H3(id="metric-total-plots", className="epoch-metric-value"),
-                    html.P("Total Plots (#)", className="epoch-metric-label")
-                ], className="epoch-metric-card")
-            ], width=2),
-            dbc.Col([
-                html.Div([
-                    html.H3(id="metric-supply-shed-area", className="epoch-metric-value"),
-                    html.P("Total Supply Shed Area (ha)", className="epoch-metric-label")
-                ], className="epoch-metric-card")
-            ], width=2),
-            dbc.Col([
-                html.Div([
-                    html.H3(id="metric-commodity-area", className="epoch-metric-value"),
-                    html.P("Total Commodity Area (ha)", className="epoch-metric-label")
-                ], className="epoch-metric-card")
-            ], width=2),
-            dbc.Col([
-                html.Div([
-                    html.H3(id="metric-estate-smallholder-ratio", className="epoch-metric-value"),
-                    html.P("Estate / Smallholder (%)", className="epoch-metric-label")
-                ], className="epoch-metric-card")
-            ], width=2)
-        ], className="mb-4"),
+        html.Div([
+            html.Div([
+                html.H3(id="metric-total-facilities", className="epoch-metric-value"),
+                html.P("Total Facilities (#)", className="epoch-metric-label")
+            ], className="epoch-metric-card", style={"flex": "1"}),
+            html.Div([
+                html.H3(id="metric-total-plots", className="epoch-metric-value"),
+                html.P("Total Plots (#)", className="epoch-metric-label")
+            ], className="epoch-metric-card", style={"flex": "1"}),
+            html.Div([
+                html.H3(id="metric-supply-shed-area", className="epoch-metric-value"),
+                html.P("Total Supply Shed Area (ha)", className="epoch-metric-label")
+            ], className="epoch-metric-card", style={"flex": "1"}),
+            html.Div([
+                html.H3(id="metric-commodity-area", className="epoch-metric-value"),
+                html.P("Total Commodity Area (ha)", className="epoch-metric-label")
+            ], className="epoch-metric-card", style={"flex": "1"}),
+            html.Div([
+                html.H3(id="metric-estate-smallholder-ratio", className="epoch-metric-value"),
+                html.P("Estate / Smallholder (%)", className="epoch-metric-label")
+            ], className="epoch-metric-card", style={"flex": "1"})
+        ], style={"display": "flex", "gap": "1rem", "marginBottom": "1.5rem", "width": "100%"}),
         
         # Map row - split into main map (3/4) and detail map (1/4)
         dbc.Row([
@@ -1102,7 +1137,8 @@ def create_main_layout():
                                 {'label': 'Area (ha) - Estate', 'value': 'area_ha_estate'},
                                 {'label': 'Area (ha) - Smallholder', 'value': 'area_ha_smallholder'},
                                 {'label': 'Area (ha) - Supply Shed', 'value': 'area_ha_supply_shed'},
-                                {'label': 'Area (ha) - Commodity', 'value': 'area_ha_commodity'}
+                                {'label': 'Area (ha) - Commodity', 'value': 'area_ha_commodity'},
+                                {'label': 'Group (Categorical)', 'value': 'group'},
                             ],
                             value='overall_risk_indicator',
                             clearable=False,
@@ -1354,7 +1390,8 @@ def create_main_layout():
                                 {'label': 'Area (ha) - Estate', 'value': 'area_ha_estate'},
                                 {'label': 'Area (ha) - Smallholder', 'value': 'area_ha_smallholder'},
                                 {'label': 'Area (ha) - Supply Shed', 'value': 'area_ha_supply_shed'},
-                                {'label': 'Area (ha) - Commodity', 'value': 'area_ha_commodity'}
+                                {'label': 'Area (ha) - Commodity', 'value': 'area_ha_commodity'},
+                                {'label': 'Group (Categorical)', 'value': 'group'}
                             ],
                             value='overall_risk_indicator',
                             clearable=False,
@@ -2005,10 +2042,19 @@ def export_facility_data_as_geojson():
         # Query the stat_supply_shed table
         query = f"""
         SELECT 
-            * EXCEPT(geo),
-            ST_ASGEOJSON(geo) as geometry
-        FROM `{PROJECT_ID}.{DATASET_ID}.stat_supply_shed`
-        WHERE geo IS NOT NULL
+            a.facility_id,
+            b.group,
+            a.company_name,
+            b.mill_name,
+            b.earliest_year_of_existence,
+            a.country,
+            b.capacity_tonnes_ffb_hour * 300 * 20 as annual_capacity_ton,
+            a.* EXCEPT(geo, facility_id, company_name, country),
+            ST_ASGEOJSON(a.geo) as geometry,
+        FROM `{PROJECT_ID}.{DATASET_ID}.stat_supply_shed` a LEFT JOIN 
+        `{PROJECT_ID}.{DATASET_ID}.stat_supply_shed_trase_metadata` b 
+        ON a.facility_id = b.uml_id AND a.company_name = b.company
+        WHERE a.geo IS NOT NULL
         """
         
         job = client.query(query)
@@ -2539,6 +2585,7 @@ def update_map_tooltip(layer_toggle, variable):
         return {
             "html": "<b>Location ID:</b> {facility_id}<br/>"
                    "<b>Company:</b> {company_name}<br/>"
+                   "<b>Group:</b> {group}<br/>"
                    "<b>Country:</b> {country}<br/>"
                    "<b>Commodity Area (ha):</b> {area_ha_commodity} ha<br/>"
                    "<b>Noncompliance Area (%):</b> {noncompliance_area_perc}<br/>"
@@ -2926,21 +2973,51 @@ def create_cumulative_chart(filtered_df, y_column, is_weighted=True):
     
     # Get unique groups for consistent colors
     unique_groups = filtered_df['group'].dropna().unique()
+    
+    # Use the same hash-based color function as the main map for consistency
+    def get_group_color_for_pie(group_value):
+        """Get categorical color for group values (same as main map)"""
+        if pd.isna(group_value) or group_value is None:
+            return [128, 128, 128]  # Gray for missing values
+        
+        # Create a hash-based color for consistent coloring
+        import hashlib
+        hash_obj = hashlib.md5(str(group_value).encode())
+        hash_int = int(hash_obj.hexdigest()[:8], 16)
+        
+        # Generate RGB values from hash
+        r = (hash_int & 0xFF0000) >> 16
+        g = (hash_int & 0x00FF00) >> 8
+        b = hash_int & 0x0000FF
+        
+        # Ensure colors are bright and contrasting (higher range for better visibility)
+        r = max(100, min(255, r))
+        g = max(100, min(255, g))
+        b = max(100, min(255, b))
+        
+        return [r, g, b]
+    
     group_colors = {
-        group: f'hsl({i * 360 / len(unique_groups)}, 70%, 50%)' 
-        for i, group in enumerate(unique_groups)
+        group: get_group_color_for_pie(group) 
+        for group in unique_groups
     }
     
     for lower, upper, label in percentile_ranges:
-        # Get data in this percentile range
-        lower_percentile = filtered_df[y_column].quantile(lower / 100)
-        upper_percentile = filtered_df[y_column].quantile(upper / 100)
-        
-        # Filter data in this range
-        range_data = filtered_df[
-            (filtered_df[y_column] >= lower_percentile) & 
-            (filtered_df[y_column] <= upper_percentile)
-        ]
+        # Handle group field differently since it's categorical
+        if y_column == 'group':
+            # For group field, we'll use a different approach - just take all data
+            # and group by the actual group values
+            range_data = filtered_df.copy()
+        else:
+            # Get data in this percentile range
+            lower_percentile = filtered_df[y_column].quantile(lower / 100)
+            upper_percentile = filtered_df[y_column].quantile(upper / 100)
+            
+            # Filter data in this range
+            range_data = filtered_df[
+                (filtered_df[y_column] >= lower_percentile) & 
+                (filtered_df[y_column] <= upper_percentile)
+            ]
         
         if not range_data.empty:
             # Determine if we should sum or average based on the indicator
@@ -3077,7 +3154,11 @@ def create_cumulative_chart(filtered_df, y_column, is_weighted=True):
             if value > 0:  # Only include groups with values
                 labels.append(str(group) if group is not None else 'Unknown')
                 values.append(value)
-                colors.append(group_colors.get(group, '#999999'))
+                group_color = group_colors.get(group, [153, 153, 153])
+                if isinstance(group_color, list):
+                    colors.append(f'rgb({group_color[0]}, {group_color[1]}, {group_color[2]})')
+                else:
+                    colors.append(group_color)
         
         # Get the size for this percentile range
         pie_size = normalized_sizes.get(data_point['percentile_range'], 0.65)
@@ -3107,7 +3188,11 @@ def create_cumulative_chart(filtered_df, y_column, is_weighted=True):
         legend_colors = []
         for group in top_10_group_names:
             legend_labels.append(str(group) if group is not None else 'Unknown')
-            legend_colors.append(group_colors.get(group, '#999999'))
+            group_color = group_colors.get(group, [153, 153, 153])
+            if isinstance(group_color, list):
+                legend_colors.append(f'rgb({group_color[0]}, {group_color[1]}, {group_color[2]})')
+            else:
+                legend_colors.append(group_color)
         
         # Add invisible trace for legend
         fig.add_trace(
@@ -3186,7 +3271,11 @@ def create_facility_metadata_table(facility_data):
     metadata_fields = {
         'facility_id': 'Facility ID',
         'company_name': 'Company Name',
+        'group': 'Group',
+        'mill_name': 'Mill Name',
         'country': 'Country',
+        'earliest_year_of_existence': 'Earliest Year of Existence',
+        'annual_capacity_ton': 'Annual Capacity (tonnes)',
         'area_ha_commodity': 'Commodity Area (ha)',
         'area_ha_smallholder': 'Smallholder Area (ha)',
         'area_ha_estate': 'Estate Area (ha)',
@@ -3293,9 +3382,35 @@ def create_chart(filtered_df, y_column, chart_color, highlighted_facility=None):
     filtered_df['facility_company'] = filtered_df.apply(create_facility_label, axis=1)
     
     # Sort by the y-column (highest to lowest)
-    df_sorted = filtered_df.sort_values(y_column, ascending=False)
+    if y_column == 'group':
+        # For group field, sort alphabetically by group name
+        df_sorted = filtered_df.sort_values(y_column, ascending=True)
+    else:
+        df_sorted = filtered_df.sort_values(y_column, ascending=False)
     
     # Create color scale for bars using quantile stretching (same as map)
+    def get_group_color(group_value):
+        """Get categorical color for group values (same as map)"""
+        if pd.isna(group_value) or group_value is None:
+            return [128, 128, 128]  # Gray for missing values
+        
+        # Create a hash-based color for consistent coloring
+        import hashlib
+        hash_obj = hashlib.md5(str(group_value).encode())
+        hash_int = int(hash_obj.hexdigest()[:8], 16)
+        
+        # Generate RGB values from hash
+        r = (hash_int & 0xFF0000) >> 16
+        g = (hash_int & 0x00FF00) >> 8
+        b = hash_int & 0x0000FF
+        
+        # Ensure colors are bright and contrasting (higher range for better visibility)
+        r = max(100, min(255, r))
+        g = max(100, min(255, g))
+        b = max(100, min(255, b))
+        
+        return [r, g, b]
+    
     def get_color_ramp(value):
         """Convert value to color ramp using quantile stretching with appropriate direction based on field type"""
         # Use the SAME quantiles as the map for consistency
@@ -3337,13 +3452,23 @@ def create_chart(filtered_df, y_column, chart_color, highlighted_facility=None):
             # Highlight the clicked bar with bright yellow
             bar_colors.append('rgb(255, 255, 0)')
         else:
-            # Use normal color scale
-            bar_colors.append(get_color_ramp(row[y_column]))
+            # Use appropriate color scale based on field type
+            if y_column == 'group':
+                # Use categorical color for group field
+                group_color = get_group_color(row[y_column])
+                bar_colors.append(f'rgb({group_color[0]}, {group_color[1]}, {group_color[2]})')
+            else:
+                # Use normal color scale for numeric fields
+                bar_colors.append(get_color_ramp(row[y_column]))
     
-    # Calculate percentiles for reference lines
-    p25 = df_sorted[y_column].quantile(0.25)
-    p50 = df_sorted[y_column].quantile(0.50)
-    p75 = df_sorted[y_column].quantile(0.75)
+    # Calculate percentiles for reference lines (skip for group field since it's categorical)
+    if y_column == 'group':
+        # For group field, we don't need percentile lines
+        p25 = p50 = p75 = None
+    else:
+        p25 = df_sorted[y_column].quantile(0.25)
+        p50 = df_sorted[y_column].quantile(0.50)
+        p75 = df_sorted[y_column].quantile(0.75)
     
     # Create figure
     fig = go.Figure()
@@ -3353,20 +3478,21 @@ def create_chart(filtered_df, y_column, chart_color, highlighted_facility=None):
         name=y_column.replace('_', ' ').title(),
         marker_color=bar_colors,
         customdata=df_sorted['facility_company'],  # Add customdata for cross-filtering
-        hovertemplate=f'<b>Facility:</b> %{{x}}<br><b>{y_column.replace("_", " ").title()}:</b> %{{y:.3f}}<extra></extra>'
+        hovertemplate=f'<b>Facility:</b> %{{x}}<br><b>{y_column.replace("_", " ").title()}:</b> %{{y}}<extra></extra>' if y_column == 'group' else f'<b>Facility:</b> %{{x}}<br><b>{y_column.replace("_", " ").title()}:</b> %{{y:.3f}}<extra></extra>'
     ))
     
-    # Add percentile reference lines
-    fig.add_vline(x=len(df_sorted) * 0.95, line_dash="dash", line_color="#90EE90", 
-                  line_width=3, annotation_text="95th percentile", annotation_position="top")
-    fig.add_vline(x=len(df_sorted) * 0.75, line_dash="dash", line_color="#228B22", 
-                  line_width=3, annotation_text="75th percentile", annotation_position="top")
-    fig.add_vline(x=len(df_sorted) * 0.50, line_dash="dash", line_color="#FFD700", 
-                  line_width=3, annotation_text="50th percentile", annotation_position="top")
-    fig.add_vline(x=len(df_sorted) * 0.25, line_dash="dash", line_color="#FF0000", 
-                  line_width=3, annotation_text="25th percentile", annotation_position="top")
-    fig.add_vline(x=len(df_sorted) * 0.05, line_dash="dash", line_color="#8B0000", 
-                  line_width=3, annotation_text="5th percentile", annotation_position="top")
+    # Add percentile reference lines (skip for group field since it's categorical)
+    if y_column != 'group':
+        fig.add_vline(x=len(df_sorted) * 0.95, line_dash="dash", line_color="#90EE90", 
+                      line_width=3, annotation_text="95th percentile", annotation_position="top")
+        fig.add_vline(x=len(df_sorted) * 0.75, line_dash="dash", line_color="#228B22", 
+                      line_width=3, annotation_text="75th percentile", annotation_position="top")
+        fig.add_vline(x=len(df_sorted) * 0.50, line_dash="dash", line_color="#FFD700", 
+                      line_width=3, annotation_text="50th percentile", annotation_position="top")
+        fig.add_vline(x=len(df_sorted) * 0.25, line_dash="dash", line_color="#FF0000", 
+                      line_width=3, annotation_text="25th percentile", annotation_position="top")
+        fig.add_vline(x=len(df_sorted) * 0.05, line_dash="dash", line_color="#8B0000", 
+                      line_width=3, annotation_text="5th percentile", annotation_position="top")
     
     # Update layout
     fig.update_layout(
