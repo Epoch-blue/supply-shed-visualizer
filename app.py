@@ -3270,8 +3270,8 @@ def create_facility_metadata_table(facility_data):
     # Define the fields to display and their labels
     metadata_fields = {
         'facility_id': 'Facility ID',
-        'company_name': 'Company Name',
         'group': 'Group',
+        'company_name': 'Company Name',
         'mill_name': 'Mill Name',
         'country': 'Country',
         'earliest_year_of_existence': 'Earliest Year of Existence',
