@@ -320,6 +320,32 @@ def fetch_data():
         return create_sample_data()
     
     query = f"""
+    WITH peat_intersections AS (
+        SELECT 
+            a.facility_id,
+            a.collection_id,
+            -- Calculate peat area intersection with supply shed
+            ST_AREA(ST_INTERSECTION(a.geo, p.geo)) / 10000 as peat_area_ha,
+            -- Calculate total supply shed area
+            ST_AREA(a.geo) / 10000 as total_supply_shed_area_ha
+        FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}` a
+        CROSS JOIN `{PROJECT_ID}.{DATASET_ID}.peat_area_geography` p
+        WHERE a.facility_geo IS NOT NULL
+          AND ST_INTERSECTS(a.geo, p.geo)
+    ),
+    peat_summary AS (
+        SELECT 
+            facility_id,
+            collection_id,
+            SUM(peat_area_ha) as total_peat_area_ha,
+            MAX(total_supply_shed_area_ha) as total_supply_shed_area_ha,
+            -- Calculate peat area percentage
+            SAFE_DIVIDE(SUM(peat_area_ha), MAX(total_supply_shed_area_ha)) as peat_area_perc,
+            -- Calculate mineral area percentage (non-peat area)
+            1 - SAFE_DIVIDE(SUM(peat_area_ha), MAX(total_supply_shed_area_ha)) as mineral_area_perc
+        FROM peat_intersections
+        GROUP BY facility_id, collection_id
+    )
     SELECT 
         a.facility_id,
         a.company_name,
@@ -328,12 +354,19 @@ def fetch_data():
         a.collection_id,
         a.noncompliance_area_ha,
         a.noncompliance_area_perc,
-        a.luc_tco2eyear,
+        a.luc_tco2eyear as biogenic_tco2eyear,
         a.nonluc_tco2eyear,
-        a.luc_tco2ehayear,
+        a.luc_tco2ehayear as biogenic_tco2ehayear,
         a.nonluc_tco2ehayear,
-        a.total_tco2eyear,
-        a.total_tco2ehayear,
+        -- Updated total emissions: adjusted non-LUC + new LUC emissions from peat and mineral (only if deforestation exists)
+        a.nonluc_tco2eyear + CASE WHEN COALESCE(a.noncompliance_area_ha, 0) > 0.001 THEN 
+            (a.noncompliance_area_ha * COALESCE(ps.peat_area_perc, 0) * 44 + 
+             a.noncompliance_area_ha * COALESCE(ps.mineral_area_perc, 1) * 15) 
+        ELSE 0 END as total_tco2eyear,
+        a.nonluc_tco2ehayear + CASE WHEN COALESCE(a.noncompliance_area_ha, 0) > 0.001 THEN 
+            (a.noncompliance_area_ha * COALESCE(ps.peat_area_perc, 0) * 44 + 
+             a.noncompliance_area_ha * COALESCE(ps.mineral_area_perc, 1) * 15) / st_area(a.geo) * 10000
+        ELSE 0 END as total_tco2ehayear,
         a.diversity_score,
         a.water_stress_index,
         a.precipitation_pet_ratio,
@@ -351,11 +384,32 @@ def fetch_data():
         b.group, 
         b.mill_name, 
         b.capacity_tonnes_ffb_hour * 300 * 20 as annual_capacity_ton,
-        -- Overall Risk Indicator: weighted combination of total_tco2ehayear, diversity_score, water_stress_index, and noncompliance_area_perc (25% each)
+        -- Peat area calculations
+        COALESCE(ps.peat_area_perc, 0) as peat_area_perc,
+        COALESCE(ps.mineral_area_perc, 1) as mineral_area_perc,
+        COALESCE(ps.total_peat_area_ha, 0) as peat_area_ha,
+        -- LUC emissions calculations
+        -- Peat LUC emissions: only calculate if there's deforestation (noncompliance_area_ha > 0.001)
+        CASE WHEN COALESCE(a.noncompliance_area_ha, 0) > 0.001 THEN a.noncompliance_area_ha * COALESCE(ps.peat_area_perc, 0) * 44 ELSE 0 END as peat_luc_emissions_tco2e,
+        -- Mineral LUC emissions: only calculate if there's deforestation (noncompliance_area_ha > 0.001)
+        CASE WHEN COALESCE(a.noncompliance_area_ha, 0) > 0.001 THEN a.noncompliance_area_ha * COALESCE(ps.mineral_area_perc, 1) * 15 ELSE 0 END as mineral_luc_emissions_tco2e,
+        -- Total LUC emissions from peat and mineral: only calculate if there's deforestation
+        CASE WHEN COALESCE(a.noncompliance_area_ha, 0) > 0.001 THEN 
+            a.noncompliance_area_ha * COALESCE(ps.peat_area_perc, 0) * 44 + 
+            a.noncompliance_area_ha * COALESCE(ps.mineral_area_perc, 1) * 15 
+        ELSE 0 END as luc_tco2eyear,
+        -- LUC emissions per hectare: calculated per hectare of deforested area, then normalized per hectare of total supply shed
+        CASE WHEN COALESCE(a.noncompliance_area_ha, 0) > 0.001 THEN 
+            (a.noncompliance_area_ha * COALESCE(ps.peat_area_perc, 0) * 44 + 
+             a.noncompliance_area_ha * COALESCE(ps.mineral_area_perc, 1) * 15) / ST_AREA(a.geo) * 10000
+        ELSE 0 END as luc_tco2ehayear,
+        -- Overall Risk Indicator: weighted combination of updated total_tco2ehayear, diversity_score, water_stress_index, and noncompliance_area_perc (25% each)
         -- Using percentile-based normalization to ensure equal contribution regardless of value ranges
         (
-            -- Normalize total_tco2ehayear using percentiles (0-1 scale, higher = more risk)
-            PERCENT_RANK() OVER (ORDER BY a.total_tco2ehayear) * 0.25 +
+            -- Normalize updated total_tco2ehayear using percentiles (0-1 scale, higher = more risk)
+            PERCENT_RANK() OVER (ORDER BY a.nonluc_tco2ehayear + CASE WHEN COALESCE(a.noncompliance_area_ha, 0) > 0.001 THEN 
+                (COALESCE(ps.peat_area_perc, 0) * 44 + COALESCE(ps.mineral_area_perc, 1) * 15) 
+            ELSE 0 END) * 0.25 +
             -- Normalize diversity_score using percentiles (0-1 scale, inverted so higher = more risk)
             (1 - PERCENT_RANK() OVER (ORDER BY a.diversity_score)) * 0.25 +
             -- Normalize water_stress_index using percentiles (0-1 scale, higher = more risk)
@@ -363,9 +417,11 @@ def fetch_data():
             -- Normalize noncompliance_area_perc using percentiles (0-1 scale, higher = more risk)
             PERCENT_RANK() OVER (ORDER BY a.noncompliance_area_perc) * 0.25
         ) as overall_risk_indicator
-    FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}` a LEFT JOIN
-    `{PROJECT_ID}.{DATASET_ID}.stat_supply_shed_trase_metadata` b 
+    FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}` a 
+    LEFT JOIN `{PROJECT_ID}.{DATASET_ID}.stat_supply_shed_trase_metadata` b 
     ON a.facility_id = b.uml_id and a.company_name = b.company
+    LEFT JOIN peat_summary ps
+        ON a.facility_id = ps.facility_id AND a.collection_id = ps.collection_id
     WHERE a.facility_geo IS NOT NULL
     """
     
@@ -419,35 +475,84 @@ def fetch_facility_detail_data(facility_id, company_name, df):
         
         print(f"Found collection_id: {collection_id} for facility: {facility_id}, company: {company_name}")
         
-        # Query plot data
+        # Query plot data with peat area calculations
         plot_query = f"""
+        WITH peat_plot_intersections AS (
         SELECT 
-            noncompliance_area_ha,
-            noncompliance_area_perc,
-            luc_tco2eyear,
-            nonluc_tco2eyear,
-            luc_tco2ehayear,
-            nonluc_tco2ehayear,
-            diversity_score,
-            water_stress_index,
-            luc_tco2eyear + nonluc_tco2eyear as total_tco2eyear,
-            luc_tco2ehayear + nonluc_tco2ehayear as total_tco2ehayear,
+                p.area_ha,
+                -- Calculate peat area intersection with plot
+                ST_AREA(ST_INTERSECTION(p.geo, peat.geo)) / 10000 as peat_area_ha
+            FROM `{PROJECT_ID}.{DATASET_ID}.{collection_id}_plot` p
+            CROSS JOIN `{PROJECT_ID}.{DATASET_ID}.peat_area_geography` peat
+            WHERE p.geo IS NOT NULL
+              AND ST_INTERSECTS(p.geo, peat.geo)
+        ),
+        peat_plot_summary AS (
+            SELECT 
             area_ha,
-            CASE WHEN system_type = 'estate' THEN 1 ELSE 2 END as system_type,
-            -- Overall Risk Indicator for plot data (using percentile-based normalization)
+                SUM(peat_area_ha) as total_peat_area_ha,
+                -- Calculate peat area percentage for this plot
+                SAFE_DIVIDE(SUM(peat_area_ha), area_ha) as peat_area_perc,
+                -- Calculate mineral area percentage (non-peat area)
+                1 - SAFE_DIVIDE(SUM(peat_area_ha), area_ha) as mineral_area_perc
+            FROM peat_plot_intersections
+            GROUP BY area_ha
+        )
+        SELECT 
+            p.noncompliance_area_ha,
+            p.noncompliance_area_perc,
+            p.luc_tco2eyear as biogenic_tco2eyear,
+            p.nonluc_tco2eyear,
+            p.luc_tco2ehayear as biogenic_tco2ehayear,
+            p.nonluc_tco2ehayear,
+            p.diversity_score,
+            p.water_stress_index,
+            -- Updated total emissions: non-LUC + new LUC emissions from peat and mineral (only if deforestation exists)
+            p.nonluc_tco2eyear + CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN 
+                (p.noncompliance_area_ha * COALESCE(pps.peat_area_perc, 0) * 44 + 
+                 p.noncompliance_area_ha * COALESCE(pps.mineral_area_perc, 1) * 15) 
+            ELSE 0 END as total_tco2eyear,
+            p.nonluc_tco2ehayear + CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN 
+                (p.noncompliance_area_ha * COALESCE(pps.peat_area_perc, 0) * 44 + p.noncompliance_area_ha * COALESCE(pps.mineral_area_perc, 1) * 15) / p.area_ha 
+            ELSE 0 END as total_tco2ehayear,
+            p.area_ha,
+            CASE WHEN p.system_type = 'estate' THEN 1 ELSE 2 END as system_type,
+            -- Peat area calculations for plots
+            COALESCE(pps.peat_area_perc, 0) as peat_area_perc,
+            COALESCE(pps.mineral_area_perc, 1) as mineral_area_perc,
+            COALESCE(pps.total_peat_area_ha, 0) as peat_area_ha,
+            -- LUC emissions calculations for plots
+            -- Peat LUC emissions: only calculate if there's deforestation (noncompliance_area_ha > 0)
+            CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN p.noncompliance_area_ha * COALESCE(pps.peat_area_perc, 0) * 44 ELSE 0 END as peat_luc_emissions_tco2e,
+            -- Mineral LUC emissions: only calculate if there's deforestation (noncompliance_area_ha > 0)
+            CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN p.noncompliance_area_ha * COALESCE(pps.mineral_area_perc, 1) * 15 ELSE 0 END as mineral_luc_emissions_tco2e,
+            -- Total LUC emissions from peat and mineral: only calculate if there's deforestation
+            CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN 
+                p.noncompliance_area_ha * COALESCE(pps.peat_area_perc, 0) * 44 + 
+                p.noncompliance_area_ha * COALESCE(pps.mineral_area_perc, 1) * 15 
+            ELSE 0 END as luc_tco2eyear,
+            -- LUC emissions per hectare: calculated per hectare of deforested area, then normalized per hectare of total plot
+            CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN 
+                (p.noncompliance_area_ha * COALESCE(pps.peat_area_perc, 0) * 44 + 
+                 p.noncompliance_area_ha * COALESCE(pps.mineral_area_perc, 1) * 15) / p.area_ha
+            ELSE 0 END as luc_tco2ehayear,
+            -- Overall Risk Indicator for plot data (using percentile-based normalization with updated total emissions)
             (
-                -- Normalize total_tco2ehayear using percentiles (0-1 scale, higher = more risk)
-                PERCENT_RANK() OVER (ORDER BY luc_tco2ehayear + nonluc_tco2ehayear) * 0.25 +
+                -- Normalize updated total_tco2ehayear using percentiles (0-1 scale, higher = more risk)
+                PERCENT_RANK() OVER (ORDER BY p.nonluc_tco2ehayear + CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN 
+                    (p.noncompliance_area_ha * COALESCE(pps.peat_area_perc, 0) * 44 + p.noncompliance_area_ha * COALESCE(pps.mineral_area_perc, 1) * 15) / p.area_ha 
+                ELSE 0 END) * 0.25 +
                 -- Normalize diversity_score using percentiles (0-1 scale, inverted so higher = more risk)
-                (1 - PERCENT_RANK() OVER (ORDER BY diversity_score)) * 0.25 +
+                (1 - PERCENT_RANK() OVER (ORDER BY p.diversity_score)) * 0.25 +
                 -- Normalize water_stress_index using percentiles (0-1 scale, higher = more risk)
-                PERCENT_RANK() OVER (ORDER BY water_stress_index) * 0.25 +
+                PERCENT_RANK() OVER (ORDER BY p.water_stress_index) * 0.25 +
                 -- Normalize noncompliance_area_perc using percentiles (0-1 scale, higher = more risk)
-                PERCENT_RANK() OVER (ORDER BY noncompliance_area_perc) * 0.25
+                PERCENT_RANK() OVER (ORDER BY p.noncompliance_area_perc) * 0.25
             ) as overall_risk_indicator,
-            ST_ASGEOJSON(geo) as geometry
-        FROM `{PROJECT_ID}.{DATASET_ID}.{collection_id}_plot`
-        WHERE geo IS NOT NULL 
+            ST_ASGEOJSON(p.geo) as geometry
+        FROM `{PROJECT_ID}.{DATASET_ID}.{collection_id}_plot` p
+        LEFT JOIN peat_plot_summary pps ON p.area_ha = pps.area_ha
+        WHERE p.geo IS NOT NULL 
         """
         
         # Query supply shed data
@@ -515,7 +620,7 @@ def clean_dataframe(df):
     # Replace NaN values in numeric columns
     numeric_columns = [
         'noncompliance_area_rate', 'total_tco2ehayear', 'diversity_score', 'water_stress_index', 'area_ha',
-        'luc_tco2eyear', 'nonluc_tco2eyear', 'luc_tco2ehayear', 'nonluc_tco2ehayear', 'total_tco2eyear',
+        'biogenic_tco2eyear', 'nonluc_tco2eyear', 'luc_tco2eyear', 'luc_tco2ehayear', 'biogenic_tco2ehayear', 'nonluc_tco2ehayear', 'total_tco2eyear',
         'precipitation_pet_ratio', 'soil_moisture_percentile', 'evapotranspiration_anomaly',
         'noncompliance_area_ha', 'noncompliance_area_perc', 'estate_smallholder_ratio',
         'area_ha_estate', 'area_ha_smallholder', 'area_ha_supply_shed', 'area_ha_commodity'
@@ -538,6 +643,14 @@ def clean_dataframe(df):
     # Replace all NaN values with None (which becomes null in JSON)
     df_clean = df_clean.where(pd.notnull(df_clean), None)
     
+    # Filter out problematic facilities (e.g., TOR GANDA with faulty data)
+    if 'company_name' in df_clean.columns:
+        initial_count = len(df_clean)
+        df_clean = df_clean[~df_clean['company_name'].str.contains('TOR GANDA', case=False, na=False)]
+        filtered_count = len(df_clean)
+        if initial_count > filtered_count:
+            print(f"⚠️ Filtered out {initial_count - filtered_count} TOR GANDA facilities with faulty data")
+    
     # Convert numpy types to native Python types for JSON serialization
     for col in df_clean.columns:
         if df_clean[col].dtype == 'object':
@@ -558,37 +671,167 @@ def create_sample_data():
     lats = np.random.uniform(25.0, 50.0, n_points)
     lons = np.random.uniform(-125.0, -65.0, n_points)
     
+    # Generate noncompliance areas (some with 0, some with values)
+    noncompliance_areas = np.random.choice([0, np.random.uniform(0.1, 100, 1)[0]], n_points, p=[0.3, 0.7])
+    
+    # Generate system types (based on estate_smallholder_ratio)
+    estate_smallholder_ratios = np.random.uniform(0, 1, n_points)
+    system_types = np.where(estate_smallholder_ratios > 0.5, 'estate', 'smallholder')
+    
+    # Generate non-LUC emissions
+    nonluc_tco2ehayear = np.random.uniform(0, 500, n_points)
+    nonluc_tco2eyear = np.random.uniform(0, 50000, n_points)
+    
     data = {
         'longitude': lons,
         'latitude': lats,
+        'facility_id': [f'facility_{i}' for i in range(n_points)],
+        'company_name': [f'Company_{i%10}' for i in range(n_points)],
+        'group': [f'Group_{i%5}' for i in range(n_points)],
+        'country': [f'Country_{i%3}' for i in range(n_points)],
         'noncompliance_area_rate': np.random.uniform(0, 1, n_points),
+        'noncompliance_area_ha': noncompliance_areas,
+        'noncompliance_area_perc': noncompliance_areas * np.random.uniform(0.1, 2, n_points),
+        'area_ha_commodity': np.random.uniform(100, 10000, n_points),
+        'area_ha_estate': np.random.uniform(50, 5000, n_points),
+        'area_ha_smallholder': np.random.uniform(50, 5000, n_points),
+        'area_ha_supply_shed': np.random.uniform(1000, 50000, n_points),
+        'annual_capacity_ton': np.random.uniform(1000, 100000, n_points),
+        'estate_smallholder_ratio': estate_smallholder_ratios,
+        'overall_risk_indicator': np.random.uniform(0, 1, n_points),
         'total_tco2ehayear': np.random.uniform(0, 1000, n_points),
+        'total_tco2eyear': np.random.uniform(0, 100000, n_points),
+        'biogenic_tco2eyear': np.random.uniform(0, 50000, n_points),
+        'biogenic_tco2ehayear': np.random.uniform(0, 500, n_points),
+        'luc_tco2eyear': np.random.uniform(0, 50000, n_points),
+        'luc_tco2ehayear': np.random.uniform(0, 500, n_points),
+        'nonluc_tco2eyear': nonluc_tco2eyear,
+        'nonluc_tco2ehayear': nonluc_tco2ehayear,
         'diversity_score': np.random.uniform(0, 10, n_points),
         'water_stress_index': np.random.uniform(0, 5, n_points),
+        'precipitation_pet_ratio': np.random.uniform(0.5, 2.0, n_points),
+        'soil_moisture_percentile': np.random.uniform(0, 100, n_points),
+        'evapotranspiration_anomaly': np.random.uniform(-2, 2, n_points),
         'id': range(n_points)
     }
     
     df = pd.DataFrame(data)
     return clean_dataframe(df)
 
+def create_sample_plot_data():
+    """Create sample plot data for development/testing when BigQuery fails"""
+    np.random.seed(42)
+    n_points = 1000  # More points for plot data
+    
+    # Generate realistic coordinates (focus on areas with palm oil)
+    lats = np.random.uniform(-5.0, 5.0, n_points)  # Indonesia/Malaysia region
+    lons = np.random.uniform(95.0, 120.0, n_points)
+    
+    # Generate noncompliance areas (some with 0, some with values)
+    noncompliance_areas = np.random.choice([0, np.random.uniform(0.1, 50, 1)[0]], n_points, p=[0.4, 0.6])
+    
+    # Generate system types
+    system_types = np.random.choice(['estate', 'smallholder'], n_points, p=[0.3, 0.7])
+    
+    # Generate non-LUC emissions
+    nonluc_tco2ehayear = np.random.uniform(0, 500, n_points)
+    nonluc_tco2eyear = np.random.uniform(0, 50000, n_points)
+    
+    data = {
+        'longitude': lons,
+        'latitude': lats,
+        'plot_id': [f'plot_{i}' for i in range(n_points)],
+        'noncompliance_area_ha': noncompliance_areas,
+        'noncompliance_area_perc': noncompliance_areas * np.random.uniform(0.1, 2, n_points),
+        'area_ha': np.random.uniform(1, 100, n_points),
+        'system_type': system_types,
+        'overall_risk_indicator': np.random.uniform(0, 1, n_points),
+        'total_tco2ehayear': np.random.uniform(0, 1000, n_points),
+        'total_tco2eyear': np.random.uniform(0, 100000, n_points),
+        'biogenic_tco2eyear': np.random.uniform(0, 50000, n_points),
+        'biogenic_tco2ehayear': np.random.uniform(0, 500, n_points),
+        'luc_tco2eyear': np.random.uniform(0, 50000, n_points),
+        'luc_tco2ehayear': np.random.uniform(0, 500, n_points),
+        'nonluc_tco2eyear': nonluc_tco2eyear,
+        'nonluc_tco2ehayear': nonluc_tco2ehayear,
+        'diversity_score': np.random.uniform(0, 10, n_points),
+        'water_stress_index': np.random.uniform(0, 5, n_points),
+        'precipitation_pet_ratio': np.random.uniform(0.5, 2.0, n_points),
+        'soil_moisture_percentile': np.random.uniform(0, 100, n_points),
+        'evapotranspiration_anomaly': np.random.uniform(-2, 2, n_points),
+        'peat_area_perc': np.random.uniform(0, 1, n_points),
+        'mineral_area_perc': np.random.uniform(0, 1, n_points)
+    }
+    
+    df = pd.DataFrame(data)
+    return clean_dataframe(df)
+
 def fetch_plot_hexagon_data():
-    """Fetch raw plot data from stat_plot table"""
+    """Fetch raw plot data from stat_plot table with peat intersection calculations"""
+    if not client:
+        return create_sample_plot_data()
+    
     try:
-        # Fetch raw plot data with lat/lon coordinates
+        # Fetch raw plot data with lat/lon coordinates and peat intersection calculations
         query = f"""
+        WITH peat_plot_intersections AS (
         SELECT 
-            ST_X(ST_CENTROID(geo)) as longitude,
-            ST_Y(ST_CENTROID(geo)) as latitude,
-            noncompliance_area_ha,
-            noncompliance_area_perc,
-            luc_tco2eyear + nonluc_tco2eyear as total_tco2eyear,            
-            luc_tco2ehayear + nonluc_tco2ehayear as total_tco2ehayear,
-            diversity_score,
-            water_stress_index,
-            area_ha
-        FROM `{PROJECT_ID}.{DATASET_ID}.stat_plot`
-        WHERE ST_X(ST_CENTROID(geo)) IS NOT NULL 
-          AND ST_Y(ST_CENTROID(geo)) IS NOT NULL
+                p.area_ha,
+                -- Calculate peat area intersection with plot
+                ST_AREA(ST_INTERSECTION(p.geo, peat.geo)) / 10000 as peat_area_ha
+            FROM `{PROJECT_ID}.{DATASET_ID}.stat_plot` p
+            CROSS JOIN `{PROJECT_ID}.{DATASET_ID}.peat_area_geography` peat
+            WHERE p.geo IS NOT NULL
+              AND ST_INTERSECTS(p.geo, peat.geo)
+        ),
+        peat_plot_summary AS (
+            SELECT 
+                area_ha,
+                SUM(peat_area_ha) as total_peat_area_ha,
+                -- Calculate peat area percentage of total plot area
+                SAFE_DIVIDE(SUM(peat_area_ha), area_ha) as peat_area_perc,
+                -- Calculate mineral area percentage (remaining area)
+                1 - SAFE_DIVIDE(SUM(peat_area_ha), area_ha) as mineral_area_perc
+            FROM peat_plot_intersections
+            GROUP BY area_ha
+        )
+        SELECT 
+            ST_X(ST_CENTROID(p.geo)) as longitude,
+            ST_Y(ST_CENTROID(p.geo)) as latitude,
+            p.noncompliance_area_ha,
+            p.noncompliance_area_perc,
+            -- Old biogenic emissions (renamed)
+            p.luc_tco2eyear as biogenic_tco2eyear,
+            p.luc_tco2ehayear as biogenic_tco2ehayear,
+            -- Non-LUC emissions
+            p.nonluc_tco2eyear,
+            p.nonluc_tco2ehayear,
+            -- New LUC emissions from peat and mineral (only if deforestation exists)
+            CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN 
+                (p.noncompliance_area_ha * COALESCE(pps.peat_area_perc, 0) * 44 + 
+                 p.noncompliance_area_ha * COALESCE(pps.mineral_area_perc, 1) * 15) 
+            ELSE 0 END as luc_tco2eyear,
+            -- LUC emissions per hectare: calculated per hectare of deforested area, then normalized per hectare of total plot
+            CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN 
+                (p.noncompliance_area_ha * COALESCE(pps.peat_area_perc, 0) * 44 + 
+                 p.noncompliance_area_ha * COALESCE(pps.mineral_area_perc, 1) * 15) / p.area_ha
+            ELSE 0 END as luc_tco2ehayear,
+            -- Updated total emissions: non-LUC + new LUC emissions from peat and mineral (only if deforestation exists)
+            p.nonluc_tco2eyear + CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN 
+                (p.noncompliance_area_ha * COALESCE(pps.peat_area_perc, 0) * 44 + 
+                 p.noncompliance_area_ha * COALESCE(pps.mineral_area_perc, 1) * 15) 
+            ELSE 0 END as total_tco2eyear,            
+            p.nonluc_tco2ehayear + CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN 
+                (p.noncompliance_area_ha * COALESCE(pps.peat_area_perc, 0) * 44 + 
+                 p.noncompliance_area_ha * COALESCE(pps.mineral_area_perc, 1) * 15) / p.area_ha
+            ELSE 0 END as total_tco2ehayear,
+            p.diversity_score,
+            p.water_stress_index,
+            p.area_ha
+        FROM `{PROJECT_ID}.{DATASET_ID}.stat_plot` p
+        LEFT JOIN peat_plot_summary pps ON p.area_ha = pps.area_ha
+        WHERE ST_X(ST_CENTROID(p.geo)) IS NOT NULL 
+          AND ST_Y(ST_CENTROID(p.geo)) IS NOT NULL
         """
         # Use streaming for large results
         query_job = client.query(query)
@@ -612,7 +855,8 @@ def fetch_plot_hexagon_data():
         return hexagon_df
     except Exception as e:
         print(f"Error fetching hexagon data: {e}")
-        return pd.DataFrame()
+        print("Creating sample plot data as fallback...")
+        return create_sample_plot_data()
 
 # Initialize empty dataframes - data will be loaded on demand
 print("🚀 Initializing app with lazy data loading...")
@@ -620,6 +864,7 @@ df = pd.DataFrame()
 plot_df = pd.DataFrame()
 data_loaded = False
 plot_data_loaded = False
+
 
 def load_data_on_demand():
     """Load facility data only when needed to avoid large startup responses"""
@@ -655,6 +900,52 @@ def get_plot_data():
         return load_plot_data_on_demand()
     return plot_df
 
+def fetch_peat_area_data():
+    """Fetch peat area geography data from BigQuery"""
+    if not client:
+        return pd.DataFrame()
+    
+    query = f"""
+    SELECT 
+        ST_ASGEOJSON(geo) as geometry
+    FROM `{PROJECT_ID}.{DATASET_ID}.peat_area_geography`
+    WHERE geo IS NOT NULL
+    """
+    
+    try:
+        query_job = client.query(query)
+        peat_df = query_job.to_dataframe(create_bqstorage_client=True)
+        
+        # Clean the data
+        peat_df = peat_df.dropna(subset=['geometry'])
+        
+        print(f"✅ Loaded {len(peat_df)} peat area polygons")
+        return peat_df
+    except Exception as e:
+        print(f"Error fetching peat area data: {e}")
+        return pd.DataFrame()
+
+# Initialize peat data variables
+peat_df = pd.DataFrame()
+peat_data_loaded = False
+
+def load_peat_data_on_demand():
+    """Load peat area data only when needed (when peat layer is toggled)"""
+    global peat_df, peat_data_loaded
+    if not peat_data_loaded:
+        print("Loading peat area data...")
+        peat_df = fetch_peat_area_data()
+        peat_data_loaded = True
+        print(f"✅ Loaded {len(peat_df)} peat areas (lazy loading)")
+    return peat_df
+
+def get_peat_data():
+    """Get the loaded peat data (loads on demand if not already loaded)"""
+    global peat_df, peat_data_loaded
+    if not peat_data_loaded:
+        return load_peat_data_on_demand()
+    return peat_df
+
 # Mapbox API key
 
 def create_deck_map(selected_points=None, 
@@ -674,7 +965,7 @@ def create_deck_map(selected_points=None,
     # Clean the data - replace NaN values with 0 or appropriate defaults
     numeric_columns = [
         'noncompliance_area_rate', 'total_tco2ehayear', 'diversity_score', 'water_stress_index', 'area_ha_commodity',
-        'luc_tco2eyear', 'nonluc_tco2eyear', 'luc_tco2ehayear', 'nonluc_tco2ehayear', 'total_tco2eyear',
+        'biogenic_tco2eyear', 'nonluc_tco2eyear', 'luc_tco2eyear', 'luc_tco2ehayear', 'biogenic_tco2ehayear', 'nonluc_tco2ehayear', 'total_tco2eyear',
         'precipitation_pet_ratio', 'soil_moisture_percentile', 'evapotranspiration_anomaly',
         'noncompliance_area_ha', 'noncompliance_area_perc', 'estate_smallholder_ratio',
         'area_ha_estate', 'area_ha_smallholder', 'area_ha_supply_shed'
@@ -1122,6 +1413,8 @@ def create_main_layout():
                                 {'label': 'Overall Risk Indicator', 'value': 'overall_risk_indicator'},
                                 {'label': 'Noncompliance Area (ha)', 'value': 'noncompliance_area_ha'},
                                 {'label': 'Noncompliance Area (%)', 'value': 'noncompliance_area_perc'},
+                                {'label': 'Biogenic Emissions (tCO2e/yr)', 'value': 'biogenic_tco2eyear'},
+                                {'label': 'Biogenic Emissions (tCO2e/ha/yr)', 'value': 'biogenic_tco2ehayear'},
                                 {'label': 'LUC Emissions (tCO2e/yr)', 'value': 'luc_tco2eyear'},
                                 {'label': 'LUC Emissions (tCO2e/ha/yr)', 'value': 'luc_tco2ehayear'},
                                 {'label': 'Non-LUC Emissions (tCO2e/yr)', 'value': 'nonluc_tco2eyear'},
@@ -1140,7 +1433,7 @@ def create_main_layout():
                                 {'label': 'Area (ha) - Commodity', 'value': 'area_ha_commodity'},
                                 {'label': 'Group (Categorical)', 'value': 'group'},
                             ],
-                            value='overall_risk_indicator',
+                            value='luc_tco2eyear',
                             clearable=False,
                             className="epoch-dropdown",
                             style={'width': '300px', 'fontSize': '12px'}
@@ -1151,7 +1444,7 @@ def create_main_layout():
                         html.Div([
                             # Layer toggle and loading spinner in top-right
                             html.Div([
-                                # Layer toggle slider and export button
+                                # Layer slider and export button
                                 html.Div([
                                     html.Label("Facilities", style={"fontSize": "12px", "color": "#666", "marginRight": "8px"}),
                                     daq.ToggleSwitch(
@@ -1307,6 +1600,8 @@ def create_main_layout():
                                 {'label': 'System Type (Estate/Smallholder)', 'value': 'system_type'},
                                 {'label': 'Noncompliance Area (ha)', 'value': 'noncompliance_area_ha'},
                                 {'label': 'Noncompliance Area (%)', 'value': 'noncompliance_area_perc'},
+                                {'label': 'Biogenic Emissions (tCO2e/yr)', 'value': 'biogenic_tco2eyear'},
+                                {'label': 'Biogenic Emissions (tCO2e/ha/yr)', 'value': 'biogenic_tco2ehayear'},
                                 {'label': 'LUC Emissions (tCO2e/yr)', 'value': 'luc_tco2eyear'},
                                 {'label': 'LUC Emissions (tCO2e/ha/yr)', 'value': 'luc_tco2ehayear'},
                                 {'label': 'Non-LUC Emissions (tCO2e/yr)', 'value': 'nonluc_tco2eyear'},
@@ -1319,7 +1614,7 @@ def create_main_layout():
                                 {'label': 'Evapotranspiration Anomaly', 'value': 'evapotranspiration_anomaly'},
                                 {'label': 'Water Stress Index', 'value': 'water_stress_index'}
                             ],
-                            value='overall_risk_indicator',
+                            value='luc_tco2eyear',
                             className="epoch-dropdown",
                             style={'width': '300px', 'fontSize': '12px'}
                         ),
@@ -1336,12 +1631,14 @@ def create_main_layout():
                                     mapboxKey=mapbox_api_token,
                                     tooltip={
                                         "html": "<b>Plot ID:</b> {plot_id}<br/>"
-                                               "<b>Plot Area:</b> {area_ha} ha<br/>"
-                                               "<b>Deforestation Area (ha):</b> {noncompliance_area_ha} ha<br/>"
-                                               "<b>Deforestation Area (%):</b> {noncompliance_area_perc} ha<br/>"
-                                               "<b>LUC Emissions (tCO2 / ha / yr):</b> {total_tco2ehayear} tCO2e/year<br/>"
-                                               "<b>Diversity Score:</b> {diversity_score}<br/>"
-                                               "<b>Water Stress Index:</b> {water_stress_index}",
+                                               "<b>Plot Area:</b> {area_ha:.3f} ha<br/>"
+                                               "<b>Deforestation Area (ha):</b> {noncompliance_area_ha:.3f} ha<br/>"
+                                               "<b>Deforestation Area (%):</b> {noncompliance_area_perc:.3f}%<br/>"
+                                               "<b>Total Emissions (tCO2 / ha / yr):</b> {total_tco2ehayear:.3f} tCO2e/ha/year<br/>"
+                                               "<b>LUC Emissions (tCO2 / ha / yr):</b> {luc_tco2ehayear:.3f} tCO2e/ha/year<br/>"
+                                               "<b>Non-LUC Emissions (tCO2 / ha / yr):</b> {nonluc_tco2ehayear:.3f} tCO2e/ha/year<br/>"
+                                               "<b>Diversity Score:</b> {diversity_score:.3f}<br/>"
+                                               "<b>Water Stress Index:</b> {water_stress_index:.3f}",
                                         "style": {
                                             "backgroundColor": "steelblue",
                                             "color": "white",
@@ -1375,6 +1672,8 @@ def create_main_layout():
                                 {'label': 'Overall Risk Indicator', 'value': 'overall_risk_indicator'},
                                 {'label': 'Noncompliance Area (ha)', 'value': 'noncompliance_area_ha'},
                                 {'label': 'Noncompliance Area (%)', 'value': 'noncompliance_area_perc'},
+                                {'label': 'Biogenic Emissions (tCO2e/yr)', 'value': 'biogenic_tco2eyear'},
+                                {'label': 'Biogenic Emissions (tCO2e/ha/yr)', 'value': 'biogenic_tco2ehayear'},
                                 {'label': 'LUC Emissions (tCO2e/yr)', 'value': 'luc_tco2eyear'},
                                 {'label': 'LUC Emissions (tCO2e/ha/yr)', 'value': 'luc_tco2ehayear'},
                                 {'label': 'Non-LUC Emissions (tCO2e/yr)', 'value': 'nonluc_tco2eyear'},
@@ -1393,7 +1692,7 @@ def create_main_layout():
                                 {'label': 'Area (ha) - Commodity', 'value': 'area_ha_commodity'},
                                 {'label': 'Group (Categorical)', 'value': 'group'}
                             ],
-                            value='overall_risk_indicator',
+                            value='luc_tco2eyear',
                             clearable=False,
                             className="epoch-dropdown",
                             style={'marginBottom': '1rem'}
@@ -1402,10 +1701,21 @@ def create_main_layout():
                     ], style={'padding': '1.5rem'})
                 ], className="epoch-card mb-3"),
                 
-                # Cumulative chart
+                
+                # Cumulative bar charts
                 html.Div([
                     html.Div([
-                        html.H5("Cumulative Analysis by Percentile", className="epoch-title mb-0"),
+                        html.H5("Cumulative Percentile Bins", className="epoch-title mb-0")
+                    ], className="epoch-card-header"),
+                    html.Div([
+                        dcc.Graph(id='cumulative-bar-charts')
+                    ], style={'padding': '1.5rem'})
+                ], className="epoch-card"),
+                
+                # Pie charts (Impact by Company Allocation)
+                html.Div([
+                    html.Div([
+                        html.H5("Impact by Company Allocation", className="epoch-title mb-0"),
                         html.Div([
                             html.Label("Unweighted", style={"fontSize": "12px", "color": "#666", "marginRight": "8px"}),
                             daq.ToggleSwitch(
@@ -1415,13 +1725,14 @@ def create_main_layout():
                                 size=40,
                                 style={"margin": "0 8px"}
                             ),
-                            html.Label("Weighted", style={"fontSize": "12px", "color": "#666", "marginLeft": "8px"})
+                            html.Label("Weighted by Capacity", style={"fontSize": "12px", "color": "#666", "marginLeft": "8px"})
                         ], className="d-flex align-items-center")
                     ], className="d-flex align-items-center justify-content-between epoch-card-header"),
                     html.Div([
                         dcc.Graph(id='cumulative-chart')
                     ], style={'padding': '1.5rem'})
                 ], className="epoch-card")
+                
             ], width=8),
             
             # Facility metadata (1/3 width)
@@ -1872,6 +2183,68 @@ def get_color_ramp(df, variable):
     
     return get_color
 
+def create_peat_polygon_layer(peat_df):
+    """Create a polygon layer for peat areas with bright purple outline"""
+    if peat_df.empty:
+        print("WARNING: No peat area data available for polygon layer")
+        return {
+            "@@type": "PolygonLayer",
+            "data": [],
+            "id": "peat-polygon-layer"
+        }
+    
+    print(f"PEAT: Creating peat polygon layer with {len(peat_df)} polygons")
+    
+    # Convert geometry strings to GeoJSON features
+    peat_features = []
+    
+    for i, (_, row) in enumerate(peat_df.iterrows()):
+        try:
+            geom = json.loads(row['geometry'])
+            properties = {
+                "id": f"peat_area_{i}",
+                "type": "peat_area"
+            }
+            
+            feature = {
+                "type": "Feature",
+                "geometry": geom,
+                "properties": properties
+            }
+            peat_features.append(feature)
+        except Exception as e:
+            print(f"Error processing peat polygon {i}: {e}")
+            continue
+    
+    # Bright purple color from inferno ramp (approximately #9C179E)
+    # RGB values: (156, 23, 158)
+    peat_color = [156, 23, 158, 255]
+    
+    peat_layer = {
+        "@@type": "GeoJsonLayer",
+        "id": "peat-polygon-layer",
+        "data": {
+            "type": "FeatureCollection",
+            "features": peat_features
+        },
+        "pickable": True,
+        "stroked": True,
+        "filled": False,  # Outline only
+        "extruded": False,
+        "lineWidthScale": 1,
+        "lineWidthMinPixels": 2,
+        "lineWidthMaxPixels": 10,
+        "getLineColor": peat_color,
+        "getFillColor": peat_color,
+        "getLineWidth": 3,
+        "updateTriggers": {
+            "getLineColor": peat_color,
+            "getFillColor": peat_color
+        }
+    }
+    
+    return peat_layer
+
 def create_plot_hexagon_layer(plot_df, variable='total_tco2ehayear'):
     """Create a hexagon layer for pre-aggregated plot data"""
     if plot_df.empty:
@@ -2143,17 +2516,45 @@ def export_plot_data_as_geoparquet():
         return None
 
 def export_detail_map_data_as_geojson(collection_id):
-    """Export detail map data as GeoJSON"""
+    """Export detail map data as GeoJSON with peat intersection calculations"""
     try:
-        # Query the collection-specific plot table
+        # Query the collection-specific plot table with peat intersection calculations
         query = f"""
+        WITH peat_plot_intersections AS (
         SELECT 
-            * EXCEPT(geo),
-            luc_tco2eyear + nonluc_tco2eyear as total_tco2eyear,
-            luc_tco2ehayear + nonluc_tco2ehayear as total_tco2ehayear,
-            ST_ASGEOJSON(geo) as geometry
-        FROM `{PROJECT_ID}.{DATASET_ID}.{collection_id}_plot`
-        WHERE geo IS NOT NULL
+                p.area_ha,
+                -- Calculate peat area intersection with plot
+                ST_AREA(ST_INTERSECTION(p.geo, peat.geo)) / 10000 as peat_area_ha
+            FROM `{PROJECT_ID}.{DATASET_ID}.{collection_id}_plot` p
+            CROSS JOIN `{PROJECT_ID}.{DATASET_ID}.peat_area_geography` peat
+            WHERE p.geo IS NOT NULL
+              AND ST_INTERSECTS(p.geo, peat.geo)
+        ),
+        peat_plot_summary AS (
+            SELECT 
+                area_ha,
+                SUM(peat_area_ha) as total_peat_area_ha,
+                -- Calculate peat area percentage of total plot area
+                SAFE_DIVIDE(SUM(peat_area_ha), area_ha) as peat_area_perc,
+                -- Calculate mineral area percentage (remaining area)
+                1 - SAFE_DIVIDE(SUM(peat_area_ha), area_ha) as mineral_area_perc
+            FROM peat_plot_intersections
+            GROUP BY area_ha
+        )
+        SELECT 
+            p.* EXCEPT(geo),
+            -- Updated total emissions: non-LUC + new LUC emissions from peat and mineral (only if deforestation exists)
+            p.nonluc_tco2eyear + CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN 
+                (p.noncompliance_area_ha * COALESCE(pps.peat_area_perc, 0) * 44 + 
+                 p.noncompliance_area_ha * COALESCE(pps.mineral_area_perc, 1) * 15) 
+            ELSE 0 END as total_tco2eyear,
+            p.nonluc_tco2ehayear + CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN 
+                (p.noncompliance_area_ha * COALESCE(pps.peat_area_perc, 0) * 44 + p.noncompliance_area_ha * COALESCE(pps.mineral_area_perc, 1) * 15) / p.area_ha 
+            ELSE 0 END as total_tco2ehayear,
+            ST_ASGEOJSON(p.geo) as geometry
+        FROM `{PROJECT_ID}.{DATASET_ID}.{collection_id}_plot` p
+        LEFT JOIN peat_plot_summary pps ON p.area_ha = pps.area_ha
+        WHERE p.geo IS NOT NULL
         """
         
         job = client.query(query)
@@ -2197,6 +2598,43 @@ def export_detail_map_data_as_geojson(collection_id):
         print(f"Error exporting detail map data: {e}")
         return None
 
+def export_peat_data_as_geojson():
+    """Export peat area data as GeoJSON"""
+    try:
+        peat_df = get_peat_data()
+        if peat_df.empty:
+            print("No peat data available for export")
+            return None
+        
+        features = []
+        for i, (_, row) in enumerate(peat_df.iterrows()):
+            try:
+                geom = json.loads(row['geometry'])
+                properties = {
+                    "id": f"peat_area_{i}",
+                    "type": "peat_area"
+                }
+                
+                feature = {
+                    "type": "Feature",
+                    "geometry": geom,
+                    "properties": properties
+                }
+                features.append(feature)
+            except Exception as e:
+                print(f"Error processing peat polygon {i} for export: {e}")
+                continue
+        
+        geojson = {
+            "type": "FeatureCollection",
+            "features": features
+        }
+        
+        return json.dumps(geojson, cls=SafeJSONEncoder)
+    except Exception as e:
+        print(f"Error exporting peat data: {e}")
+        return None
+
 def create_default_detail_map():
     """Create a default detail map with sample data from the specified default collection"""
     try:
@@ -2204,38 +2642,87 @@ def create_default_detail_map():
         default_collection_id = "0x706310441550789c3dc429e3098592f3702e07e8b36cae7c06e96daf1a85a65d"
         print(f"Loading default collection: {default_collection_id}")
             
-        # Query plot data for the first collection
+        # Query plot data for the first collection with peat area calculations
         plot_query = f"""
+            WITH peat_plot_intersections AS (
             SELECT 
-                noncompliance_area_ha,
-                noncompliance_area_perc,
-                luc_tco2eyear,
-                luc_tco2ehayear,
-                nonluc_tco2eyear,
-                nonluc_tco2ehayear,
-                diversity_score,
-                precipitation_pet_ratio,
-                soil_moisture_percentile,
-                evapotranspiration_anomaly,
-                water_stress_index,
+                    p.area_ha,
+                    -- Calculate peat area intersection with plot
+                    ST_AREA(ST_INTERSECTION(p.geo, peat.geo)) / 10000 as peat_area_ha
+                FROM `{PROJECT_ID}.{DATASET_ID}.{default_collection_id}_plot` p
+                CROSS JOIN `{PROJECT_ID}.{DATASET_ID}.peat_area_geography` peat
+                WHERE p.geo IS NOT NULL
+                  AND ST_INTERSECTS(p.geo, peat.geo)
+            ),
+            peat_plot_summary AS (
+                SELECT 
                 area_ha,
-                luc_tco2eyear + nonluc_tco2eyear as total_tco2eyear,
-                luc_tco2ehayear + nonluc_tco2ehayear as total_tco2ehayear,
-                CASE WHEN system_type = 'estate' THEN 1 ELSE 2 END as system_type,
-                -- Overall Risk Indicator for plot data (using percentile-based normalization)
+                    SUM(peat_area_ha) as total_peat_area_ha,
+                    -- Calculate peat area percentage for this plot
+                    SAFE_DIVIDE(SUM(peat_area_ha), area_ha) as peat_area_perc,
+                    -- Calculate mineral area percentage (non-peat area)
+                    1 - SAFE_DIVIDE(SUM(peat_area_ha), area_ha) as mineral_area_perc
+                FROM peat_plot_intersections
+                GROUP BY area_ha
+            )
+            SELECT 
+                p.noncompliance_area_ha,
+                p.noncompliance_area_perc,
+                p.luc_tco2eyear as biogenic_tco2eyear,
+                p.luc_tco2ehayear as biogenic_tco2ehayear,
+                p.nonluc_tco2eyear,
+                p.nonluc_tco2ehayear,
+                p.diversity_score,
+                p.precipitation_pet_ratio,
+                p.soil_moisture_percentile,
+                p.evapotranspiration_anomaly,
+                p.water_stress_index,
+                p.area_ha,
+                -- Updated total emissions: non-LUC + new LUC emissions from peat and mineral (only if deforestation exists)
+                p.nonluc_tco2eyear + CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN 
+                    (p.noncompliance_area_ha * COALESCE(pps.peat_area_perc, 0) * 44 + 
+                     p.noncompliance_area_ha * COALESCE(pps.mineral_area_perc, 1) * 15) 
+                ELSE 0 END as total_tco2eyear,
+                p.nonluc_tco2ehayear + CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN 
+                    (p.noncompliance_area_ha * COALESCE(pps.peat_area_perc, 0) * 44 + p.noncompliance_area_ha * COALESCE(pps.mineral_area_perc, 1) * 15) / p.area_ha 
+                ELSE 0 END as total_tco2ehayear,
+                CASE WHEN p.system_type = 'estate' THEN 1 ELSE 2 END as system_type,
+                -- Peat area calculations for plots
+                COALESCE(pps.peat_area_perc, 0) as peat_area_perc,
+                COALESCE(pps.mineral_area_perc, 1) as mineral_area_perc,
+                COALESCE(pps.total_peat_area_ha, 0) as peat_area_ha,
+                -- LUC emissions calculations for plots
+                -- Peat LUC emissions: only calculate if there's deforestation (noncompliance_area_ha > 0.001)
+                CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN p.noncompliance_area_ha * COALESCE(pps.peat_area_perc, 0) * 44 ELSE 0 END as peat_luc_emissions_tco2e,
+                -- Mineral LUC emissions: only calculate if there's deforestation (noncompliance_area_ha > 0.001)
+                CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN p.noncompliance_area_ha * COALESCE(pps.mineral_area_perc, 1) * 15 ELSE 0 END as mineral_luc_emissions_tco2e,
+                -- Total LUC emissions from peat and mineral: only calculate if there's deforestation
+                CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN 
+                    p.noncompliance_area_ha * COALESCE(pps.peat_area_perc, 0) * 44 + 
+                    p.noncompliance_area_ha * COALESCE(pps.mineral_area_perc, 1) * 15 
+                ELSE 0 END as luc_tco2eyear,
+                -- LUC emissions per hectare: calculated per hectare of deforested area, then normalized per hectare of total plot
+                CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN 
+                    (p.noncompliance_area_ha * COALESCE(pps.peat_area_perc, 0) * 44 + 
+                     p.noncompliance_area_ha * COALESCE(pps.mineral_area_perc, 1) * 15) / p.area_ha
+                ELSE 0 END as luc_tco2ehayear,
+                -- Overall Risk Indicator for plot data (using percentile-based normalization with updated total emissions)
                 (
-                    -- Normalize total_tco2ehayear using percentiles (0-1 scale, higher = more risk)
-                    PERCENT_RANK() OVER (ORDER BY luc_tco2ehayear + nonluc_tco2ehayear) * 0.25 +
+                    -- Normalize updated total_tco2ehayear using percentiles (0-1 scale, higher = more risk)
+                    PERCENT_RANK() OVER (ORDER BY p.nonluc_tco2ehayear + CASE WHEN COALESCE(p.noncompliance_area_ha, 0) > 0.001 THEN 
+                        (p.noncompliance_area_ha * COALESCE(pps.peat_area_perc, 0) * 44 + p.noncompliance_area_ha * COALESCE(pps.mineral_area_perc, 1) * 15) / p.area_ha 
+                    ELSE 0 END) * 0.25 +
                     -- Normalize diversity_score using percentiles (0-1 scale, inverted so higher = more risk)
-                    (1 - PERCENT_RANK() OVER (ORDER BY diversity_score)) * 0.25 +
+                    (1 - PERCENT_RANK() OVER (ORDER BY p.diversity_score)) * 0.25 +
                     -- Normalize water_stress_index using percentiles (0-1 scale, higher = more risk)
-                    PERCENT_RANK() OVER (ORDER BY water_stress_index) * 0.25 +
+                    PERCENT_RANK() OVER (ORDER BY p.water_stress_index) * 0.25 +
                     -- Normalize noncompliance_area_perc using percentiles (0-1 scale, higher = more risk)
-                    PERCENT_RANK() OVER (ORDER BY noncompliance_area_perc) * 0.25
+                    PERCENT_RANK() OVER (ORDER BY p.noncompliance_area_perc) * 0.25
                 ) as overall_risk_indicator,
-                ST_ASGEOJSON(geo) as geometry
-            FROM `{PROJECT_ID}.{DATASET_ID}.{default_collection_id}_plot`
-            WHERE geo IS NOT NULL 
+                ST_ASGEOJSON(p.geo) as geometry
+            FROM `{PROJECT_ID}.{DATASET_ID}.{default_collection_id}_plot` p
+            LEFT JOIN peat_plot_summary pps ON p.area_ha = pps.area_ha
+            WHERE p.geo IS NOT NULL 
             """
             
             # Query supply shed data for the first collection
@@ -2407,8 +2894,12 @@ def create_detail_map(plot_df, supply_shed_df, color_field='total_tco2ehayear'):
             properties = {
                 "plot_id": row.get('plot_id', f'plot_{i}'),
                 "area_ha": row.get('area_ha', 0),
+                "biogenic_tco2eyear": row.get('biogenic_tco2eyear', 0),
                 "luc_tco2eyear": row.get('luc_tco2eyear', 0),
+                "luc_tco2ehayear": row.get('luc_tco2ehayear', 0),
                 "nonluc_tco2eyear": row.get('nonluc_tco2eyear', 0),
+                "nonluc_tco2ehayear": row.get('nonluc_tco2ehayear', 0),
+                "total_tco2eyear": row.get('total_tco2eyear', 0),
                 "total_tco2ehayear": row.get('total_tco2ehayear', 0),
                 "noncompliance_area_ha": row.get('noncompliance_area_ha', 0),
                 "noncompliance_area_perc": row.get('noncompliance_area_perc', 0),
@@ -2518,12 +3009,14 @@ def create_detail_map(plot_df, supply_shed_df, color_field='total_tco2ehayear'):
     # Create deck configuration with simpler tooltip
     tooltip_config = {
         "html": "Plot ID: {properties.plot_id}<br/>"
-               "Area: {properties.area_ha} ha<br/>"
-               "Deforestation Area (ha): {properties.noncompliance_area_ha} ha<br/>"
-               "Deforestation Area (%): {properties.noncompliance_area_perc} ha<br/>"
-               "CO2: {properties.total_tco2ehayear} tCO2e/ha/year<br/>"
-               "Diversity: {properties.diversity_score}<br/>"
-               "Water Stress: {properties.water_stress_index}",
+               "Area: {properties.area_ha:.3f} ha<br/>"
+               "Deforestation Area (ha): {properties.noncompliance_area_ha:.3f} ha<br/>"
+               "Deforestation Area (%): {properties.noncompliance_area_perc:.3f}%<br/>"
+               "Total Emissions: {properties.total_tco2ehayear:.3f} tCO2e/ha/year<br/>"
+               "LUC Emissions: {properties.luc_tco2ehayear:.3f} tCO2e/ha/year<br/>"
+               "Non-LUC Emissions: {properties.nonluc_tco2ehayear:.3f} tCO2e/ha/year<br/>"
+               "Diversity: {properties.diversity_score:.3f}<br/>"
+               "Water Stress: {properties.water_stress_index:.3f}",
         "style": {
             "backgroundColor": "steelblue",
             "color": "white"
@@ -2559,6 +3052,8 @@ def create_detail_map(plot_df, supply_shed_df, color_field='total_tco2ehayear'):
 
 # Removed separate hover callback - now handled in the main click callback
 
+# Removed button text callback - ToggleSwitch handles its own labels
+
 # Callback to update tooltip based on layer toggle
 @app.callback(
     Output('deck-map', 'tooltip'),
@@ -2567,12 +3062,13 @@ def create_detail_map(plot_df, supply_shed_df, color_field='total_tco2ehayear'):
 )
 def update_map_tooltip(layer_toggle, variable):
     """Update tooltip based on layer type"""
-    if layer_toggle:  # Plot layer (HexagonLayer)
+    # Toggle between facilities (False) and plots (True)
+    if layer_toggle:  # Plot layer (True)
         return {
             "html": f"<b>Plot Density</b><br/>"
-                   f"<b>Variable ({variable}):</b> {{elevationValue}}<br/>"
+                   f"<b>Variable ({variable}):</b> {{elevationValue:.3f}}<br/>"
                    f"<b>Plot Count:</b> {{count}}<br/>"
-                   f"<b>Position:</b> {{x}}, {{y}}<br/>"
+                   f"<b>Position:</b> {{x:.3f}}, {{y:.3f}}<br/>"
                    f"<b>Hexagon ID:</b> {{hexagon_id}}",
             "style": {
                 "backgroundColor": "steelblue",
@@ -2581,17 +3077,17 @@ def update_map_tooltip(layer_toggle, variable):
                 "borderRadius": "5px"
             }
         }
-    else:  # Facility layer
+    else:  # Facility layer (default)
         return {
             "html": "<b>Location ID:</b> {facility_id}<br/>"
                    "<b>Company:</b> {company_name}<br/>"
                    "<b>Group:</b> {group}<br/>"
                    "<b>Country:</b> {country}<br/>"
-                   "<b>Commodity Area (ha):</b> {area_ha_commodity} ha<br/>"
-                   "<b>Noncompliance Area (%):</b> {noncompliance_area_perc}<br/>"
-                   "<b>Total Emissions (tCO2e/ha/year):</b> {total_tco2ehayear}<br/>"
-                   "<b>Diversity Score:</b> {diversity_score}<br/>"
-                   "<b>Water Stress:</b> {water_stress_index}",
+                   "<b>Commodity Area (ha):</b> {area_ha_commodity:.3f} ha<br/>"
+                   "<b>Noncompliance Area (%):</b> {noncompliance_area_perc:.3f}%<br/>"
+                   "<b>Total Emissions (tCO2e/ha/year):</b> {total_tco2ehayear:.3f}<br/>"
+                   "<b>Diversity Score:</b> {diversity_score:.3f}<br/>"
+                   "<b>Water Stress:</b> {water_stress_index:.3f}",
             "style": {
                 "backgroundColor": "steelblue",
                 "color": "white",
@@ -2617,9 +3113,10 @@ def update_deck_map(variable, layer_toggle, click_info, chart_click_data):
     # Get the loaded facility data
     df = get_data()
     
-    # Only load plot data if we're switching to plot layer
+    # Load data based on layer type
     plot_df = pd.DataFrame()  # Default empty
-    if layer_toggle:  # If plot layer is toggled on
+    
+    if layer_toggle:  # If plot layer is selected (True)
         plot_df = get_plot_data()
     
     # If there's a click on a facility (either map or chart), get coordinates for immediate zooming
@@ -2695,8 +3192,8 @@ def update_deck_map(variable, layer_toggle, click_info, chart_click_data):
             'pitch': 0,  # 2D view
             'bearing': 0
         }
-    # Create map based on layer type (True = Plots, False = Facilities)
-    if layer_toggle:
+    # Create map based on layer type
+    if layer_toggle:  # Plots layer (True)
         print(f"TOGGLE: Creating plots layer with variable: {variable}")
         # Use pre-loaded plot data
         print(f"TOGGLE: Using pre-loaded plot data, shape: {plot_df.shape if not plot_df.empty else 'empty'}")
@@ -2767,7 +3264,8 @@ def update_deck_map(variable, layer_toggle, click_info, chart_click_data):
             print("TOGGLE: No plot data found, returning empty map")
             # Fallback to empty map if no plot data
             return json.dumps({'layers': []}, cls=SafeJSONEncoder)
-    else:
+    
+    else:  # Default to facilities layer
         print("TOGGLE: Creating facilities layer")
         # Default to facility layer
         facility_data = create_deck_map(None, 'dark', variable, '2d', custom_view_state, None)
@@ -2798,12 +3296,12 @@ def export_main_map_data(n_clicks, layer_toggle):
         "display": "block"
     }
     
-    if layer_toggle:  # Plot layer
+    if layer_toggle:  # Plot layer (True)
         # Export plot data as GeoParquet
         data = export_plot_data_as_geoparquet()
         if data:
             return dict(content=data, filename="plot_data.parquet"), {"display": "none"}
-    else:  # Facility layer
+    else:  # Facility layer (default) - slider value 0
         # Export facility data as GeoJSON
         data = export_facility_data_as_geojson()
         if data:
@@ -2863,7 +3361,7 @@ def update_main_chart(chart_var, highlighted_facility):
     
     # Handle None values from dropdown (initial load)
     if chart_var is None:
-        chart_var = 'overall_risk_indicator'
+        chart_var = 'luc_tco2eyear'
     
     # Always show all data (no filtering)
     filtered_df = df.copy()
@@ -2888,7 +3386,7 @@ def update_cumulative_chart(chart_var, click_info, chart_click_data, is_weighted
     df = get_data()
     
     # Use the facilities chart dropdown value
-    variable = chart_var if chart_var is not None else 'overall_risk_indicator'
+    variable = chart_var if chart_var is not None else 'luc_tco2eyear'
     
     # Always show all data (no filtering)
     filtered_df = df.copy()
@@ -3370,6 +3868,266 @@ def create_cumulative_chart(filtered_df, y_column, is_weighted=True):
     
     return fig
 
+def create_cumulative_bar_charts(filtered_df, y_column):
+    """Create cumulative bar charts for indicators and capacity by percentile ranges"""
+    
+    # Define percentile ranges (same as pie charts)
+    percentile_ranges = [
+        (0, 5, "0-5th"),
+        (5, 25, "5-25th"), 
+        (25, 50, "25-50th"),
+        (50, 75, "50-75th"),
+        (75, 95, "75-95th"),
+        (95, 100, "95-100th")
+    ]
+    
+    # Handle group field differently since it's categorical
+    if y_column == 'group':
+        # For group field, create a single bar showing all groups
+        range_data = filtered_df.copy()
+        
+        # Determine operation (count for group field)
+        operation = "Count"
+        
+        # Calculate total contribution
+        total_contribution = len(range_data)
+        
+        cumulative_data = [{
+            'percentile_range': 'All Groups',
+            'total_contribution': total_contribution,
+            'count': len(range_data),
+            'operation': operation
+        }]
+    else:
+        # For numeric fields, use percentile ranges
+        cumulative_data = []
+        
+        for lower, upper, label in percentile_ranges:
+            # Get data in this percentile range
+            lower_percentile = filtered_df[y_column].quantile(lower / 100)
+            upper_percentile = filtered_df[y_column].quantile(upper / 100)
+            
+            # Filter data in this range
+            range_data = filtered_df[
+                (filtered_df[y_column] >= lower_percentile) & 
+                (filtered_df[y_column] <= upper_percentile)
+            ]
+            
+            if not range_data.empty:
+                # Determine if we should sum or average based on the indicator
+                if any(keyword in y_column.lower() for keyword in ['total', 'area_ha']) and 'tco2ehayear' not in y_column.lower():
+                    operation = "Sum"
+                else:
+                    operation = "Average"
+                
+                # Calculate the indicator value for this percentile range
+                if operation == 'Average':
+                    # For average indicators: show the actual average
+                    indicator_value = range_data[y_column].mean()
+                    # Multiply noncompliance_area_perc by 100 to get proper percentage
+                    if 'noncompliance_area_perc' in y_column:
+                        indicator_value = indicator_value * 100
+                else:  # Sum case
+                    # For sum indicators: show the actual sum
+                    indicator_value = range_data[y_column].sum()
+                    # Multiply noncompliance_area_perc by 100 to get proper percentage
+                    if 'noncompliance_area_perc' in y_column:
+                        indicator_value = indicator_value * 100
+                
+                # For cumulative bar charts, we want to show the actual indicator values
+                # (not the total contribution used for pie sizing)
+                total_contribution = indicator_value
+                
+                cumulative_data.append({
+                    'percentile_range': label,
+                    'total_contribution': total_contribution,
+                    'count': len(range_data),
+                    'operation': operation
+                })
+    
+    # Create subplots for both charts
+    from plotly.subplots import make_subplots
+    
+    fig = make_subplots(
+        rows=2, cols=1,
+        subplot_titles=[
+            f"{cumulative_data[0]['operation']} by Percentile Range",
+            "Annual Capacity (tonnes) by Percentile Range"
+        ],
+        vertical_spacing=0.15
+    )
+    
+    # Prepare data for indicator chart
+    indicator_labels = []
+    indicator_values = []
+    indicator_colors = []
+    
+    # Prepare data for capacity chart
+    capacity_labels = []
+    capacity_values = []
+    capacity_colors = []
+    
+    # Get color ramp function (same as facilities chart)
+    def get_color_ramp(value):
+        # Use a red → yellow → green gradient, with optional inversion for certain indicators
+        if pd.isna(value):
+            return 'rgb(200, 200, 200)'
+        
+        # Quantile clipping based on the selected column
+        q02 = filtered_df[y_column].quantile(0.02)
+        q98 = filtered_df[y_column].quantile(0.98)
+        if q98 == q02:
+            ratio = 0.5
+        else:
+            # Clamp value between q02 and q98, then normalize 0..1
+            v = min(max(value, q02), q98)
+            ratio = (v - q02) / (q98 - q02)
+        
+        # Indicators that are "good when higher" so colors invert (high→green)
+        invert_colors = ['diversity_score', 'soil_moisture_percentile', 'precipitation_pet_ratio']
+        invert = any(keyword in y_column.lower() for keyword in invert_colors)
+        
+        if invert:
+            # 0 -> red, 0.5 -> yellow, 1 -> green (no flip)
+            norm = ratio
+        else:
+            # Flip so that higher risk → red, lower → green
+            norm = 1.0 - ratio
+        
+        # Piecewise interpolate: red(255,0,0) → yellow(255,255,0) → green(0,200,0)
+        if norm <= 0.5:
+            # Red to Yellow
+            t = norm / 0.5
+            r = int(255 * (1 - 0) + 255 * 0)  # stays 255
+            g = int(0 + t * 255)
+            b = 0
+        else:
+            # Yellow to Green
+            t = (norm - 0.5) / 0.5
+            r = int(255 * (1 - t))
+            g = int(255 * (1 - 0) + (200 - 255) * 0)  # start 255, end ~200 for pleasant green
+            g = int(255 * (1 - t) + 200 * t)
+            b = 0
+        return f'rgb({r}, {g}, {b})'
+    
+    for data_point in cumulative_data:
+        percentile_range = data_point['percentile_range']
+        total_contribution = data_point['total_contribution']
+        
+        # For indicator chart
+        indicator_labels.append(percentile_range)
+        indicator_values.append(total_contribution)
+        
+        # For capacity chart - calculate capacity for this percentile range and prepare range_data for color, too
+        if y_column == 'group':
+            range_data = filtered_df.copy()
+        else:
+            if percentile_range == 'All Groups':
+                range_data = filtered_df.copy()
+            else:
+                # Find the correct percentile thresholds
+                lower_percentile = None
+                upper_percentile = None
+                for lower, upper, label in percentile_ranges:
+                    if label == percentile_range:
+                        lower_percentile = filtered_df[y_column].quantile(lower / 100)
+                        upper_percentile = filtered_df[y_column].quantile(upper / 100)
+                        break
+                range_data = filtered_df[
+                    (filtered_df[y_column] >= lower_percentile) &
+                    (filtered_df[y_column] <= upper_percentile)
+                ]
+        
+        # Determine indicator color based on the bin's mean indicator value (to mirror facilities chart)
+        if y_column == 'group':
+            indicator_colors.append('rgb(100, 100, 100)')
+        else:
+            bin_mean_value = range_data[y_column].mean()
+            indicator_colors.append(get_color_ramp(bin_mean_value))
+        
+        # Calculate total capacity for this range
+        total_capacity = range_data['annual_capacity_ton'].sum()
+        capacity_labels.append(percentile_range)
+        capacity_values.append(total_capacity)
+        # Defer capacity color calculation until after we have all values
+    
+    # Use monochrome Epoch blue for all capacity bars
+    capacity_colors = ['#007bff'] * len(capacity_values)
+    
+    # Add indicator chart
+    fig.add_trace(
+        go.Bar(
+            x=list(reversed(indicator_labels)),
+            y=list(reversed(indicator_values)),
+            marker_color=list(reversed(indicator_colors)),
+            name=f"{cumulative_data[0]['operation']}",
+            hovertemplate=f'<b>%{{x}} Percentile</b><br>' +
+                         f'{cumulative_data[0]["operation"]}: %{{y:,.2f}}<br>' +
+                         '<extra></extra>'
+        ),
+        row=1, col=1
+    )
+    
+    # Add capacity chart
+    fig.add_trace(
+        go.Bar(
+            x=list(reversed(capacity_labels)),
+            y=list(reversed(capacity_values)),
+            marker_color=list(reversed(capacity_colors)),
+            name="Annual Capacity",
+            hovertemplate='<b>%{x} Percentile</b><br>' +
+                         'Annual Capacity: %{y:,.0f} tonnes<br>' +
+                         '<extra></extra>'
+        ),
+        row=2, col=1
+    )
+    
+    # Update layout
+    fig.update_layout(
+        title=f"Cumulative Analysis: {y_column.replace('_', ' ').title()}",
+        showlegend=False,
+        height=600,
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        font=dict(family="Arial", size=12)
+    )
+    
+    # Update x-axis labels
+    fig.update_xaxes(title_text="Percentile Range", row=1, col=1)
+    fig.update_xaxes(title_text="Percentile Range", row=2, col=1)
+    
+    # Update y-axis labels
+    fig.update_yaxes(title_text=f"{cumulative_data[0]['operation']}", row=1, col=1)
+    fig.update_yaxes(title_text="Annual Capacity (tonnes)", row=2, col=1)
+    
+    return fig
+
+@app.callback(
+    Output('cumulative-bar-charts', 'figure'),
+    [Input('facilities-chart-dropdown', 'value'),
+     Input('deck-map', 'clickInfo'),
+     Input('main-chart', 'clickData')]
+)
+def update_cumulative_bar_charts(chart_var, click_info, chart_click_data):
+    """Update cumulative bar charts based on dropdown selection and interactions"""
+    df = get_data()
+    variable = chart_var if chart_var is not None else 'luc_tco2eyear'
+    filtered_df = df.copy()
+    
+    # Apply same filtering logic as other charts
+    if click_info and click_info.get('object'):
+        clicked_facility_id = click_info['object'].get('facility_id')
+        if clicked_facility_id:
+            filtered_df = df[df['facility_id'] == clicked_facility_id]
+    
+    if chart_click_data and chart_click_data.get('points'):
+        clicked_facility_id = chart_click_data['points'][0]['x']
+        if clicked_facility_id:
+            filtered_df = df[df['facility_id'] == clicked_facility_id]
+    
+    fig = create_cumulative_bar_charts(filtered_df, variable)
+    return fig
+
 def create_facility_metadata_table(facility_data):
     """Create a metadata table for the selected facility"""
     
@@ -3389,6 +4147,8 @@ def create_facility_metadata_table(facility_data):
         'area_ha_forest': 'Natural Forest Area (ha)',
         'noncompliance_area_rate': 'Noncompliance Rate',
         'noncompliance_area_perc': 'Noncompliance Area (%)',
+        'biogenic_tco2eyear': 'Biogenic Emissions (tCO2e/year)',
+        'biogenic_tco2ehayear': 'Biogenic Emissions (tCO2e/ha/year)',
         'luc_tco2eyear': 'LUC Emissions (tCO2e/year)',
         'luc_tco2ehayear': 'LUC Emissions (tCO2e/ha/year)',
         'nonluc_tco2eyear': 'Non-LUC Emissions (tCO2e/year)',
@@ -3643,7 +4403,7 @@ def create_chart(filtered_df, y_column, chart_color, highlighted_facility=None):
 )
 def reset_detail_dropdown_on_new_data(stored_data):
     """Reset detail dropdown to default when new data is loaded"""
-    return 'overall_risk_indicator'
+    return 'luc_tco2eyear'
 
 # Add callback for detail color dropdown
 @app.callback(
