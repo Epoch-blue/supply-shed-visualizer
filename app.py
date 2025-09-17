@@ -3581,10 +3581,15 @@ def create_cumulative_chart(filtered_df, y_column, is_weighted=True):
                     range_total_capacity = range_data['annual_capacity_ton'].sum()
                 
                 # Determine if we should sum or average based on the indicator
-                if any(keyword in y_column.lower() for keyword in ['total', 'area_ha']) and 'tco2ehayear' not in y_column.lower():
-                    operation = "Sum"
+                # Sum for total emissions (tCO2e/year), average for per-hectare emissions (tCO2e/ha/year)
+                if 'tco2eyear' in y_column.lower() and 'tco2ehayear' not in y_column.lower():
+                    operation = "Sum"  # Total emissions should be summed
+                elif 'tco2ehayear' in y_column.lower():
+                    operation = "Average"  # Per-hectare emissions should be averaged
+                elif any(keyword in y_column.lower() for keyword in ['area_ha', 'noncompliance_area_ha']):
+                    operation = "Sum"  # Area values should be summed
                 else:
-                    operation = "Average"
+                    operation = "Average"  # Other indicators should be averaged
                 
                 # Group by 'group' and calculate values (weighted or unweighted)
                 group_values = {}
@@ -3602,25 +3607,25 @@ def create_cumulative_chart(filtered_df, y_column, is_weighted=True):
                                 indicator_value = indicator_value * 100
                         
                         if is_weighted:
-                            # For weighted mode, show the actual average indicator value for this group
-                            # The weighting affects the pie slice size, not the displayed value
+                            # For weighted mode, show the actual indicator value for this group
+                            # The slice size represents capacity proportion, the value represents actual impact
                             group_values[group] = indicator_value
                         else:
                             # Use unweighted indicator value
                             group_values[group] = indicator_value
                 
-                # Calculate pie slice sizes (weighted by capacity if in weighted mode)
+                # Calculate pie slice sizes
                 pie_slice_sizes = {}
                 if is_weighted:
-                    for group in unique_groups:
-                        group_data = range_data[range_data['group'] == group]
-                        if not group_data.empty:
-                            # Weight by annual capacity (normalized within this percentile range)
-                            annual_capacity = group_data['annual_capacity_ton'].sum()
-                            if annual_capacity > 0 and range_total_capacity > 0:
-                                pie_slice_sizes[group] = annual_capacity / range_total_capacity
-                            else:
-                                pie_slice_sizes[group] = 0
+                    # In weighted mode, make slice sizes proportional to the displayed values
+                    # This ensures slice size and displayed value are consistent
+                    total_indicator_value = sum(group_values.values())
+                    if total_indicator_value > 0:
+                        for group in unique_groups:
+                            pie_slice_sizes[group] = group_values.get(group, 0) / total_indicator_value
+                    else:
+                        # Fallback to equal proportions if no values
+                        pie_slice_sizes = {group: 1.0 / len(unique_groups) for group in unique_groups}
                 else:
                     # Unweighted: use equal proportions
                     pie_slice_sizes = {group: 1.0 / len(unique_groups) for group in unique_groups}
@@ -3915,10 +3920,15 @@ def create_cumulative_bar_charts(filtered_df, y_column):
             
             if not range_data.empty:
                 # Determine if we should sum or average based on the indicator
-                if any(keyword in y_column.lower() for keyword in ['total', 'area_ha']) and 'tco2ehayear' not in y_column.lower():
-                    operation = "Sum"
+                # Sum for total emissions (tCO2e/year), average for per-hectare emissions (tCO2e/ha/year)
+                if 'tco2eyear' in y_column.lower() and 'tco2ehayear' not in y_column.lower():
+                    operation = "Sum"  # Total emissions should be summed
+                elif 'tco2ehayear' in y_column.lower():
+                    operation = "Average"  # Per-hectare emissions should be averaged
+                elif any(keyword in y_column.lower() for keyword in ['area_ha', 'noncompliance_area_ha']):
+                    operation = "Sum"  # Area values should be summed
                 else:
-                    operation = "Average"
+                    operation = "Average"  # Other indicators should be averaged
                 
                 # Calculate the indicator value for this percentile range
                 if operation == 'Average':
