@@ -643,13 +643,18 @@ def clean_dataframe(df):
     # Replace all NaN values with None (which becomes null in JSON)
     df_clean = df_clean.where(pd.notnull(df_clean), None)
     
-    # Filter out problematic facilities (e.g., TOR GANDA with faulty data)
+    # Deduplicate TOR GANDA facilities (keep only one representative entry)
     if 'company_name' in df_clean.columns:
         initial_count = len(df_clean)
-        df_clean = df_clean[~df_clean['company_name'].str.contains('TOR GANDA', case=False, na=False)]
-        filtered_count = len(df_clean)
-        if initial_count > filtered_count:
-            print(f"⚠️ Filtered out {initial_count - filtered_count} TOR GANDA facilities with faulty data")
+        tor_ganda_mask = df_clean['company_name'].str.contains('TOR GANDA', case=False, na=False)
+        tor_ganda_count = tor_ganda_mask.sum()
+        
+        if tor_ganda_count > 1:
+            # Keep only the first TOR GANDA entry and remove duplicates
+            tor_ganda_indices = df_clean[tor_ganda_mask].index
+            indices_to_remove = tor_ganda_indices[1:]  # Keep first, remove rest
+            df_clean = df_clean.drop(indices_to_remove)
+            print(f"⚠️ Deduplicated {len(indices_to_remove)} duplicate TOR GANDA facilities, kept 1 representative entry")
     
     # Convert numpy types to native Python types for JSON serialization
     for col in df_clean.columns:
@@ -4064,30 +4069,68 @@ def create_cumulative_bar_charts(filtered_df, y_column):
     # Use monochrome Epoch blue for all capacity bars
     capacity_colors = ['#007bff'] * len(capacity_values)
     
-    # Add indicator chart
+    # Calculate percentage contributions for indicator chart tooltips
+    total_indicator_value = sum(indicator_values)
+    indicator_percentage_labels = []
+    for value in reversed(indicator_values):
+        if total_indicator_value > 0:
+            percentage = (value / total_indicator_value) * 100
+            indicator_percentage_labels.append(f'{percentage:.1f}%')
+        else:
+            indicator_percentage_labels.append('0.0%')
+    
+    # Create x-axis labels with percentage contributions in brackets
+    indicator_x_labels = []
+    for i, label in enumerate(reversed(indicator_labels)):
+        percentage = indicator_percentage_labels[i]
+        indicator_x_labels.append(f"{label}<br>({percentage})")
+    
+    # Add indicator chart (with percentage in tooltip only)
     fig.add_trace(
         go.Bar(
-            x=list(reversed(indicator_labels)),
+            x=indicator_x_labels,
             y=list(reversed(indicator_values)),
             marker_color=list(reversed(indicator_colors)),
             name=f"{cumulative_data[0]['operation']}",
             hovertemplate=f'<b>%{{x}} Percentile</b><br>' +
                          f'{cumulative_data[0]["operation"]}: %{{y:,.2f}}<br>' +
-                         '<extra></extra>'
+                         'Contribution: %{text}<br>' +
+                         '<extra></extra>',
+            text=indicator_percentage_labels,
+            textposition='none'  # Hide the text labels completely
         ),
         row=1, col=1
     )
     
+    # Calculate percentage contributions for capacity chart tooltips
+    total_capacity_value = sum(capacity_values)
+    capacity_percentage_labels = []
+    for value in reversed(capacity_values):
+        if total_capacity_value > 0:
+            percentage = (value / total_capacity_value) * 100
+            capacity_percentage_labels.append(f'{percentage:.1f}%')
+        else:
+            capacity_percentage_labels.append('0.0%')
+    
+    # Create x-axis labels with percentage contributions in brackets for capacity chart
+    capacity_x_labels = []
+    for i, label in enumerate(reversed(capacity_labels)):
+        percentage = capacity_percentage_labels[i]
+        capacity_x_labels.append(f"{label}<br>({percentage})")
+    
     # Add capacity chart
     fig.add_trace(
         go.Bar(
-            x=list(reversed(capacity_labels)),
+            x=capacity_x_labels,
             y=list(reversed(capacity_values)),
             marker_color=list(reversed(capacity_colors)),
             name="Annual Capacity",
             hovertemplate='<b>%{x} Percentile</b><br>' +
                          'Annual Capacity: %{y:,.0f} tonnes<br>' +
-                         '<extra></extra>'
+                         'Contribution: %{text}<br>' +
+                         '<extra></extra>',
+            text=capacity_percentage_labels,
+            textposition='none'  # Hide the text labels completely
         ),
         row=2, col=1
     )
@@ -4102,9 +4145,9 @@ def create_cumulative_bar_charts(filtered_df, y_column):
         font=dict(family="Arial", size=12)
     )
     
-    # Update x-axis labels
-    fig.update_xaxes(title_text="Percentile Range", row=1, col=1)
-    fig.update_xaxes(title_text="Percentile Range", row=2, col=1)
+    # Update x-axis labels (remove titles since percentages are shown in brackets)
+    fig.update_xaxes(title_text="", row=1, col=1)
+    fig.update_xaxes(title_text="", row=2, col=1)
     
     # Update y-axis labels
     fig.update_yaxes(title_text=f"{cumulative_data[0]['operation']}", row=1, col=1)
