@@ -7,7 +7,7 @@ from dash import html, dcc
 import dash_bootstrap_components as dbc
 import dash_daq as daq
 import dash_deck
-from config import DEFAULT_MAP_STYLE
+# Removed config import as it doesn't exist
 
 def create_main_layout():
     """Create the main application layout"""
@@ -335,35 +335,4 @@ def create_main_layout():
         ], style={"display": "none"})
     ])
 
-def get_mapbox_api_key():
-    """Get Mapbox API key from Google Secret Manager"""
-    from google.cloud import secretmanager
-    import os
-    from dotenv import load_dotenv
-    
-    try:
-        # Initialize the Secret Manager client
-        client = secretmanager.SecretManagerServiceClient()
-        
-        # Project ID
-        project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "epoch-geospatial-dev")
-        
-        # Secret name
-        secret_name = "mapbox-api-key"
-        
-        # Build the resource name of the secret version
-        name = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
-        
-        # Access the secret version
-        response = client.access_secret_version(request={"name": name})
-        
-        # Return the secret value
-        return response.payload.data.decode("UTF-8")
-        
-    except Exception as e:
-        print(f"Error fetching Mapbox API key from Secret Manager: {e}")
-        print("Falling back to environment variable...")
-        
-        # Fallback to environment variable
-        load_dotenv()
-        return os.getenv("MAPBOX_API_KEY")
+# Redundant function removed - use the one from app.py

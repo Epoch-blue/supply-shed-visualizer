@@ -79,6 +79,9 @@ VALID_CREDENTIALS = {
 user_sessions = {}
 SESSION_TIMEOUT = 24 * 60 * 60  # 24 hours in seconds
 
+# Loading state for plot data
+plot_data_loading = False
+
 def validate_credentials(username, password):
     """Validate user credentials"""
     return VALID_CREDENTIALS.get(username) == password
@@ -127,7 +130,7 @@ app = dash.Dash(__name__, external_stylesheets=[
     "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap",
     "/assets/epoch_theme.css"
 ])
-app.title = "Supply Shed Visualizer | Epoch"
+app.title = "Indonesian Palm Oil"
 
 # Login page layout
 def create_login_page(show_loading=False):
@@ -588,14 +591,15 @@ def fetch_facility_detail_data(facility_id, company_name, df):
         plot_df = plot_df.where(pd.notnull(plot_df), None)
         supply_shed_df = supply_shed_df.where(pd.notnull(supply_shed_df), None)
         
-        # Convert any remaining numpy types
+        # Convert any remaining numpy types and format numbers
         for col in plot_df.columns:
             if plot_df[col].dtype == 'object':
                 continue
             elif plot_df[col].dtype in ['int64', 'int32']:
                 plot_df[col] = plot_df[col].astype('int64')
             elif plot_df[col].dtype in ['float64', 'float32']:
-                plot_df[col] = plot_df[col].astype('float64')
+                # Round floating point numbers to 3 decimal places for tooltip display
+                plot_df[col] = plot_df[col].round(3)
         
         for col in supply_shed_df.columns:
             if supply_shed_df[col].dtype == 'object':
@@ -663,7 +667,8 @@ def clean_dataframe(df):
         elif df_clean[col].dtype in ['int64', 'int32']:
             df_clean[col] = df_clean[col].astype('int64')
         elif df_clean[col].dtype in ['float64', 'float32']:
-            df_clean[col] = df_clean[col].astype('float64')
+            # Round floating point numbers to 3 decimal places for tooltip display
+            df_clean[col] = df_clean[col].round(3)
     
     return df_clean
 
@@ -845,10 +850,13 @@ def fetch_plot_hexagon_data():
         # Clean the data
         hexagon_df = hexagon_df.dropna(subset=['longitude', 'latitude'])
         
-        # Handle NaN values in numeric columns
+        # Handle NaN values in numeric columns and format numbers
         numeric_columns = hexagon_df.select_dtypes(include=[np.number]).columns
         for col in numeric_columns:
             hexagon_df[col] = hexagon_df[col].fillna(0)
+            # Round floating point numbers to 3 decimal places for tooltip display
+            if hexagon_df[col].dtype in ['float64', 'float32']:
+                hexagon_df[col] = hexagon_df[col].round(3)
         
         print(f"Loaded {len(hexagon_df)} raw plot records")
         if len(hexagon_df) > 0:
@@ -883,12 +891,19 @@ def load_data_on_demand():
 
 def load_plot_data_on_demand():
     """Load plot hexagon data only when needed (when plot layer is toggled)"""
-    global plot_df, plot_data_loaded
-    if not plot_data_loaded:
+    global plot_df, plot_data_loaded, plot_data_loading
+    if not plot_data_loaded and not plot_data_loading:
+        plot_data_loading = True
         print("Loading plot hexagon data...")
-        plot_df = fetch_plot_hexagon_data()
-        plot_data_loaded = True
-        print(f"✅ Loaded {len(plot_df)} plots (lazy loading)")
+        try:
+            plot_df = fetch_plot_hexagon_data()
+            plot_data_loaded = True
+            print(f"✅ Loaded {len(plot_df)} plots (lazy loading)")
+        except Exception as e:
+            print(f"❌ Error loading plot data: {e}")
+            plot_df = pd.DataFrame()
+        finally:
+            plot_data_loading = False
     return plot_df
 
 def get_data():
@@ -1256,7 +1271,23 @@ def create_deck_map(selected_points=None,
         api_keys={"mapbox": mapbox_api_token},
         height=500,
         width="100%",
-        tooltip=True
+        tooltip={
+            "html": "<b>Location ID:</b> {facility_id}<br/>"
+                   "<b>Company:</b> {company_name}<br/>"
+                   "<b>Group:</b> {group}<br/>"
+                   "<b>Country:</b> {country}<br/>"
+                   "<b>Commodity Area (ha):</b> {area_ha_commodity} ha<br/>"
+                   "<b>Noncompliance Area (%):</b> {noncompliance_area_perc}%<br/>"
+                   "<b>Total Emissions (tCO2e/ha/year):</b> {total_tco2ehayear}<br/>"
+                   "<b>Diversity Score:</b> {diversity_score}<br/>"
+                   "<b>Water Stress:</b> {water_stress_index}",
+            "style": {
+                "backgroundColor": "steelblue",
+                "color": "white",
+                "padding": "10px",
+                "borderRadius": "5px"
+            }
+        }
     )
     
     return deck.to_json()
@@ -1314,16 +1345,10 @@ def create_main_layout():
                     )
                 ], className="col-auto"),
                 html.Div([
-                    html.H1("Supply Shed Visualizer", className="epoch-title", style={'margin': '0', 'fontSize': '2.5rem', 'color': 'white'}),
-                    html.P("Enviromental Metrics of All Palm Mills Supply Sheds in Indonesia", className="epoch-subtitle", style={'margin': '0', 'fontSize': '1.1rem', 'color': 'white'})
+                    html.H1("Indonesian Palm Oil", className="epoch-title", style={'margin': '0', 'fontSize': '2.5rem', 'color': 'white'}),
+                    html.P("A supplier-level analysis of risks and impact", className="epoch-subtitle", style={'margin': '0', 'fontSize': '1.1rem', 'color': 'white'})
                 ], className="col text-center"),
-                html.Div([
-                    html.Img(
-                        src="assets/wwf.png",
-                        style={'height': '80px', 'width': 'auto'},
-                        alt="WWF Logo"
-                    )
-                ], className="col-auto")
+                html.Div([], className="col-auto")
             ], className="row align-items-center justify-content-between")
         ], className="container", style={"position": "relative"})
     ], className="epoch-header", style={"position": "relative"}),
@@ -1465,7 +1490,7 @@ def create_main_layout():
                                     "top": "10px", 
                                     "right": "10px", 
                                     "zIndex": "1000",
-                                    "display": "flex",
+                                    "display": "none",  # Hidden since plots are not being displayed
                                     "alignItems": "center",
                                     "backgroundColor": "rgba(255,255,255,0.9)",
                                     "padding": "8px 12px",
@@ -1636,14 +1661,14 @@ def create_main_layout():
                                     mapboxKey=mapbox_api_token,
                                     tooltip={
                                         "html": "<b>Plot ID:</b> {plot_id}<br/>"
-                                               "<b>Plot Area:</b> {area_ha:.3f} ha<br/>"
-                                               "<b>Deforestation Area (ha):</b> {noncompliance_area_ha:.3f} ha<br/>"
-                                               "<b>Deforestation Area (%):</b> {noncompliance_area_perc:.3f}%<br/>"
-                                               "<b>Total Emissions (tCO2 / ha / yr):</b> {total_tco2ehayear:.3f} tCO2e/ha/year<br/>"
-                                               "<b>LUC Emissions (tCO2 / ha / yr):</b> {luc_tco2ehayear:.3f} tCO2e/ha/year<br/>"
-                                               "<b>Non-LUC Emissions (tCO2 / ha / yr):</b> {nonluc_tco2ehayear:.3f} tCO2e/ha/year<br/>"
-                                               "<b>Diversity Score:</b> {diversity_score:.3f}<br/>"
-                                               "<b>Water Stress Index:</b> {water_stress_index:.3f}",
+                                               "<b>Plot Area:</b> {area_ha} ha<br/>"
+                                               "<b>Deforestation Area (ha):</b> {noncompliance_area_ha} ha<br/>"
+                                               "<b>Deforestation Area (%):</b> {noncompliance_area_perc}%<br/>"
+                                               "<b>Total Emissions (tCO2 / ha / yr):</b> {total_tco2ehayear} tCO2e/ha/year<br/>"
+                                               "<b>LUC Emissions (tCO2 / ha / yr):</b> {luc_tco2ehayear} tCO2e/ha/year<br/>"
+                                               "<b>Non-LUC Emissions (tCO2 / ha / yr):</b> {nonluc_tco2ehayear} tCO2e/ha/year<br/>"
+                                               "<b>Diversity Score:</b> {diversity_score}<br/>"
+                                               "<b>Water Stress Index:</b> {water_stress_index}",
                                         "style": {
                                             "backgroundColor": "steelblue",
                                             "color": "white",
@@ -1667,7 +1692,7 @@ def create_main_layout():
                 # Main chart
                 html.Div([
                     html.Div([
-                        html.H5("All Facilities Chart", className="epoch-title mb-0")
+                        html.H5("Facility Distribution", className="epoch-title mb-0")
                     ], className="d-flex align-items-center justify-content-between epoch-card-header"),
                     html.Div([
                         # Dropdown for facilities chart (controls both chart and map)
@@ -1715,7 +1740,7 @@ def create_main_layout():
                     html.Div([
                         dcc.Graph(id='cumulative-bar-charts')
                     ], style={'padding': '1.5rem'})
-                ], className="epoch-card"),
+                ], className="epoch-card", style={'marginTop': '1.5rem'}),
                 
                 # Pie charts (Impact by Company Allocation)
                 html.Div([
@@ -1736,7 +1761,7 @@ def create_main_layout():
                     html.Div([
                         dcc.Graph(id='cumulative-chart')
                     ], style={'padding': '1.5rem'})
-                ], className="epoch-card")
+                ], className="epoch-card", style={'marginTop': '1.5rem'})
                 
             ], width=8),
             
@@ -2918,6 +2943,12 @@ def create_detail_map(plot_df, supply_shed_df, color_field='total_tco2ehayear'):
             def clean_value(value):
                 if pd.isna(value) or value is None:
                     return 0
+                elif isinstance(value, (int, float, np.integer, np.floating)):
+                    # Round numeric values to 3 decimal places
+                    if isinstance(value, (float, np.floating)):
+                        return round(float(value), 3)
+                    else:
+                        return value
                 return value
             
             # Flatten properties for tooltip compatibility
@@ -2929,8 +2960,10 @@ def create_detail_map(plot_df, supply_shed_df, color_field='total_tco2ehayear'):
                 "plot_id": str(properties["plot_id"]) if properties["plot_id"] is not None else "unknown",
                 "area_ha": clean_value(properties["area_ha"]),
                 "noncompliance_area_ha": clean_value(properties["noncompliance_area_ha"]),
-                "noncompliance_area_perc": clean_value(row.get('noncompliance_area_perc', 0)),
+                "noncompliance_area_perc": clean_value(properties.get('noncompliance_area_perc', 0)),
                 "total_tco2ehayear": clean_value(properties["total_tco2ehayear"]),
+                "luc_tco2ehayear": clean_value(properties.get("luc_tco2ehayear", 0)),
+                "nonluc_tco2ehayear": clean_value(properties.get("nonluc_tco2ehayear", 0)),
                 "diversity_score": clean_value(properties["diversity_score"]),
                 "water_stress_index": clean_value(properties["water_stress_index"])
             }
@@ -3014,14 +3047,14 @@ def create_detail_map(plot_df, supply_shed_df, color_field='total_tco2ehayear'):
     # Create deck configuration with simpler tooltip
     tooltip_config = {
         "html": "Plot ID: {properties.plot_id}<br/>"
-               "Area: {properties.area_ha:.3f} ha<br/>"
-               "Deforestation Area (ha): {properties.noncompliance_area_ha:.3f} ha<br/>"
-               "Deforestation Area (%): {properties.noncompliance_area_perc:.3f}%<br/>"
-               "Total Emissions: {properties.total_tco2ehayear:.3f} tCO2e/ha/year<br/>"
-               "LUC Emissions: {properties.luc_tco2ehayear:.3f} tCO2e/ha/year<br/>"
-               "Non-LUC Emissions: {properties.nonluc_tco2ehayear:.3f} tCO2e/ha/year<br/>"
-               "Diversity: {properties.diversity_score:.3f}<br/>"
-               "Water Stress: {properties.water_stress_index:.3f}",
+               "Area: {properties.area_ha} ha<br/>"
+               "Deforestation Area (ha): {properties.noncompliance_area_ha} ha<br/>"
+               "Deforestation Area (%): {properties.noncompliance_area_perc}%<br/>"
+               "Total Emissions: {properties.total_tco2ehayear} tCO2e/ha/year<br/>"
+               "LUC Emissions: {properties.luc_tco2ehayear} tCO2e/ha/year<br/>"
+               "Non-LUC Emissions: {properties.nonluc_tco2ehayear} tCO2e/ha/year<br/>"
+               "Diversity: {properties.diversity_score}<br/>"
+               "Water Stress: {properties.water_stress_index}",
         "style": {
             "backgroundColor": "steelblue",
             "color": "white"
@@ -3037,7 +3070,23 @@ def create_detail_map(plot_df, supply_shed_df, color_field='total_tco2ehayear'):
             api_keys={"mapbox": mapbox_api_token},
             height=500,
             width="100%",
-            tooltip=True
+            tooltip={
+                "html": "<b>Plot ID:</b> {plot_id}<br/>"
+                       "<b>Plot Area:</b> {area_ha} ha<br/>"
+                       "<b>Deforestation Area (ha):</b> {noncompliance_area_ha} ha<br/>"
+                       "<b>Deforestation Area (%):</b> {noncompliance_area_perc}%<br/>"
+                       "<b>Total Emissions (tCO2 / ha / yr):</b> {total_tco2ehayear} tCO2e/ha/year<br/>"
+                       "<b>LUC Emissions (tCO2 / ha / yr):</b> {luc_tco2ehayear} tCO2e/ha/year<br/>"
+                       "<b>Non-LUC Emissions (tCO2 / ha / yr):</b> {nonluc_tco2ehayear} tCO2e/ha/year<br/>"
+                       "<b>Diversity Score:</b> {diversity_score}<br/>"
+                       "<b>Water Stress Index:</b> {water_stress_index}",
+                "style": {
+                    "backgroundColor": "steelblue",
+                    "color": "white",
+                    "padding": "10px",
+                    "borderRadius": "5px"
+                }
+            }
         )
         
         # Convert to JSON for dash_deck.DeckGL component with safe encoding for NaN values
@@ -3070,11 +3119,11 @@ def update_map_tooltip(layer_toggle, variable):
     # Toggle between facilities (False) and plots (True)
     if layer_toggle:  # Plot layer (True)
         return {
-            "html": f"<b>Plot Density</b><br/>"
-                   f"<b>Variable ({variable}):</b> {{elevationValue:.3f}}<br/>"
-                   f"<b>Plot Count:</b> {{count}}<br/>"
-                   f"<b>Position:</b> {{x:.3f}}, {{y:.3f}}<br/>"
-                   f"<b>Hexagon ID:</b> {{hexagon_id}}",
+            "html": "<b>Plot Density</b><br/>"
+                   "<b>Variable (" + variable + "):</b> {elevationValue}<br/>"
+                   "<b>Plot Count:</b> {count}<br/>"
+                   "<b>Position:</b> {x}, {y}<br/>"
+                   "<b>Hexagon ID:</b> {hexagon_id}",
             "style": {
                 "backgroundColor": "steelblue",
                 "color": "white",
@@ -3088,11 +3137,11 @@ def update_map_tooltip(layer_toggle, variable):
                    "<b>Company:</b> {company_name}<br/>"
                    "<b>Group:</b> {group}<br/>"
                    "<b>Country:</b> {country}<br/>"
-                   "<b>Commodity Area (ha):</b> {area_ha_commodity:.3f} ha<br/>"
-                   "<b>Noncompliance Area (%):</b> {noncompliance_area_perc:.3f}%<br/>"
-                   "<b>Total Emissions (tCO2e/ha/year):</b> {total_tco2ehayear:.3f}<br/>"
-                   "<b>Diversity Score:</b> {diversity_score:.3f}<br/>"
-                   "<b>Water Stress:</b> {water_stress_index:.3f}",
+                   "<b>Commodity Area (ha):</b> {area_ha_commodity} ha<br/>"
+                   "<b>Noncompliance Area (%):</b> {noncompliance_area_perc}%<br/>"
+                   "<b>Total Emissions (tCO2e/ha/year):</b> {total_tco2ehayear}<br/>"
+                   "<b>Diversity Score:</b> {diversity_score}<br/>"
+                   "<b>Water Stress:</b> {water_stress_index}",
             "style": {
                 "backgroundColor": "steelblue",
                 "color": "white",
@@ -3122,6 +3171,12 @@ def update_deck_map(variable, layer_toggle, click_info, chart_click_data):
     plot_df = pd.DataFrame()  # Default empty
     
     if layer_toggle:  # If plot layer is selected (True)
+        # Check if plot data is currently loading to prevent hanging
+        if plot_data_loading:
+            print("TOGGLE: Plot data is currently loading, returning current map state")
+            # Return current map state to prevent hanging
+            return create_deck_map(None, 'dark', variable, '2d', None, None)
+        
         plot_df = get_plot_data()
     
     # If there's a click on a facility (either map or chart), get coordinates for immediate zooming
@@ -3261,7 +3316,19 @@ def update_deck_map(variable, layer_toggle, click_info, chart_click_data):
                 api_keys={"mapbox": mapbox_api_token},
                 height=500,
                 width="100%",
-                tooltip=True
+                tooltip={
+                    "html": "<b>Plot Density</b><br/>"
+                           "<b>Variable:</b> {elevationValue}<br/>"
+                           "<b>Plot Count:</b> {count}<br/>"
+                           "<b>Position:</b> {x}, {y}<br/>"
+                           "<b>Hexagon ID:</b> {hexagon_id}",
+                    "style": {
+                        "backgroundColor": "steelblue",
+                        "color": "white",
+                        "padding": "10px",
+                        "borderRadius": "5px"
+                    }
+                }
             )
             print(f"TOGGLE: Returning pydeck object with {len([hexagon_layer])} layers")
             return deck.to_json()
@@ -3797,9 +3864,9 @@ def create_cumulative_chart(filtered_df, y_column, is_weighted=True):
                 values=values,
                 marker_colors=colors,
                 textinfo='none',
-                       hovertemplate=f'<b>{data_point["percentile_range"]} Percentile</b><br>' +
+                       hovertemplate='<b>' + data_point["percentile_range"] + ' Percentile</b><br>' +
                                      'Group: %{label}<br>' +
-                                     f'{cumulative_data[0]["operation"]}: %{{customdata:.2f}}<br>' +
+                                     cumulative_data[0]["operation"] + ': %{customdata:.2f}<br>' +
                                      'Slice Size: %{percent}<br>' +
                                      '<extra></extra>',
                        customdata=indicator_values,
@@ -4092,8 +4159,8 @@ def create_cumulative_bar_charts(filtered_df, y_column):
             y=list(reversed(indicator_values)),
             marker_color=list(reversed(indicator_colors)),
             name=f"{cumulative_data[0]['operation']}",
-            hovertemplate=f'<b>%{{x}} Percentile</b><br>' +
-                         f'{cumulative_data[0]["operation"]}: %{{y:,.2f}}<br>' +
+            hovertemplate='<b>%{x} Percentile</b><br>' +
+                         cumulative_data[0]["operation"] + ': %{y:,.2f}<br>' +
                          'Contribution: %{text}<br>' +
                          '<extra></extra>',
             text=indicator_percentage_labels,
@@ -4397,7 +4464,7 @@ def create_chart(filtered_df, y_column, chart_color, highlighted_facility=None):
         name=y_column.replace('_', ' ').title(),
         marker_color=bar_colors,
         customdata=df_sorted['facility_company'],  # Add customdata for cross-filtering
-        hovertemplate=f'<b>Facility:</b> %{{x}}<br><b>{y_column.replace("_", " ").title()}:</b> %{{y}}<extra></extra>' if y_column == 'group' else f'<b>Facility:</b> %{{x}}<br><b>{y_column.replace("_", " ").title()}:</b> %{{y:.3f}}<extra></extra>'
+        hovertemplate='<b>Facility:</b> %{x}<br><b>' + y_column.replace("_", " ").title() + ':</b> %{y}<extra></extra>'
     ))
     
     # Add percentile reference lines (skip for group field since it's categorical)
