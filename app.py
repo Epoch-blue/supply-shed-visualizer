@@ -1277,8 +1277,9 @@ def create_deck_map(selected_points=None,
                    "<b>Group:</b> {group}<br/>"
                    "<b>Country:</b> {country}<br/>"
                    "<b>Commodity Area (ha):</b> {area_ha_commodity} ha<br/>"
-                   "<b>Noncompliance Area (%):</b> {noncompliance_area_perc}%<br/>"
-                   "<b>Total Emissions (tCO2e/ha/year):</b> {total_tco2ehayear}<br/>"
+                   "<b>Deforestation Area (ha):</b> {noncompliance_area_ha} ha<br/>"
+                   "<b>Deforestation Area (%):</b> {noncompliance_area_perc}%<br/>"
+                   "<b>LUC Emissions (tCO2e/ha/year):</b> {luc_tco2ehayear}<br/>"
                    "<b>Diversity Score:</b> {diversity_score}<br/>"
                    "<b>Water Stress:</b> {water_stress_index}",
             "style": {
@@ -3075,9 +3076,7 @@ def create_detail_map(plot_df, supply_shed_df, color_field='total_tco2ehayear'):
                        "<b>Plot Area:</b> {area_ha} ha<br/>"
                        "<b>Deforestation Area (ha):</b> {noncompliance_area_ha} ha<br/>"
                        "<b>Deforestation Area (%):</b> {noncompliance_area_perc}%<br/>"
-                       "<b>Total Emissions (tCO2 / ha / yr):</b> {total_tco2ehayear} tCO2e/ha/year<br/>"
                        "<b>LUC Emissions (tCO2 / ha / yr):</b> {luc_tco2ehayear} tCO2e/ha/year<br/>"
-                       "<b>Non-LUC Emissions (tCO2 / ha / yr):</b> {nonluc_tco2ehayear} tCO2e/ha/year<br/>"
                        "<b>Diversity Score:</b> {diversity_score}<br/>"
                        "<b>Water Stress Index:</b> {water_stress_index}",
                 "style": {
@@ -3138,8 +3137,9 @@ def update_map_tooltip(layer_toggle, variable):
                    "<b>Group:</b> {group}<br/>"
                    "<b>Country:</b> {country}<br/>"
                    "<b>Commodity Area (ha):</b> {area_ha_commodity} ha<br/>"
-                   "<b>Noncompliance Area (%):</b> {noncompliance_area_perc}%<br/>"
-                   "<b>Total Emissions (tCO2e/ha/year):</b> {total_tco2ehayear}<br/>"
+                   "<b>Deforestation Area (ha):</b> {noncompliance_area_ha} ha<br/>"
+                   "<b>Deforestation Area (%):</b> {noncompliance_area_perc}%<br/>"
+                   "<b>LUC Emissions (tCO2e/ha/year):</b> {luc_tco2ehayear}<br/>"
                    "<b>Diversity Score:</b> {diversity_score}<br/>"
                    "<b>Water Stress:</b> {water_stress_index}",
             "style": {
