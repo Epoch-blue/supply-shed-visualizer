@@ -2963,6 +2963,7 @@ def create_detail_map(plot_df, supply_shed_df, color_field='total_tco2ehayear'):
                 "noncompliance_area_ha": clean_value(properties["noncompliance_area_ha"]),
                 "noncompliance_area_perc": clean_value(properties.get('noncompliance_area_perc', 0)),
                 "total_tco2ehayear": clean_value(properties["total_tco2ehayear"]),
+                "luc_tco2eyear": clean_value(properties.get("luc_tco2eyear", 0)),
                 "luc_tco2ehayear": clean_value(properties.get("luc_tco2ehayear", 0)),
                 "nonluc_tco2ehayear": clean_value(properties.get("nonluc_tco2ehayear", 0)),
                 "diversity_score": clean_value(properties["diversity_score"]),
